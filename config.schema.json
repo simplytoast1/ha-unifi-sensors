@@ -1,0 +1,200 @@
+{
+  "pluginAlias": "UnifiSensors",
+  "pluginType": "platform",
+  "singular": true,
+  "customUi": true,
+  "headerDisplay": "UniFi Protect sensors (UP Sense) over the local Integration API.",
+  "footerDisplay": "After the first launch the Homebridge log lists each discovered sensor with its MAC address so you can paste it into the Sensors list below.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Platform Name",
+        "type": "string",
+        "default": "UniFi Sensors",
+        "required": true
+      },
+      "host": {
+        "title": "UniFi Console URL",
+        "type": "string",
+        "required": true,
+        "placeholder": "https://nvr.example.com",
+        "description": "Base URL of your UniFi console, including scheme."
+      },
+      "apiKey": {
+        "title": "Integration API Key",
+        "type": "string",
+        "required": true,
+        "format": "password",
+        "description": "Generate in the UniFi UI under Settings, Control Plane, Integrations, or in Protect under Settings, API."
+      },
+      "rejectUnauthorized": {
+        "title": "Validate TLS certificate",
+        "type": "boolean",
+        "default": false,
+        "description": "Most consoles use a self-signed certificate. Leave off unless you have installed a trusted certificate."
+      },
+      "pollIntervalSeconds": {
+        "title": "Poll interval (seconds)",
+        "type": "integer",
+        "default": 5,
+        "minimum": 1,
+        "maximum": 300,
+        "description": "Used when the websocket subscribe stream is unavailable. The plugin always tries the websocket first."
+      },
+      "preferWebsocket": {
+        "title": "Prefer websocket updates",
+        "type": "boolean",
+        "default": true,
+        "description": "Attempt /subscribe/devices for push updates and fall back to polling if it fails."
+      },
+      "removeAfterMissingSnapshots": {
+        "title": "Auto-remove devices missing for N snapshots",
+        "type": "integer",
+        "default": 0,
+        "minimum": 0,
+        "maximum": 1000,
+        "description": "How many consecutive snapshots a device must be absent from before its HomeKit accessory is unregistered. 0 (default) means never auto-remove. Setting a positive value protects against transient API issues at the cost of slower cleanup when a device is genuinely removed. Devices hidden via config are removed immediately regardless of this setting."
+      },
+      "logEvents": {
+        "title": "Log device events to Homebridge log",
+        "type": "boolean",
+        "default": true,
+        "description": "When on, prints an info-level line every time a sensor changes state (motion, contact, leak, alarm) or a fob button is pressed. Useful for diagnostics; turn off for a quieter log once you have things working."
+      },
+      "sensors": {
+        "title": "Per-sensor overrides",
+        "type": "array",
+        "description": "One entry per sensor you want to hide or customize. Sensors not listed here are exposed with defaults.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "mac": {
+              "title": "MAC address",
+              "type": "string",
+              "required": true,
+              "description": "Visible in the Homebridge log after the first run."
+            },
+            "name": {
+              "title": "Display name (optional)",
+              "type": "string",
+              "description": "Override the name shown in HomeKit. Defaults to the name configured in UniFi Protect."
+            },
+            "hide": {
+              "title": "Hide this sensor entirely",
+              "type": "boolean",
+              "default": false
+            },
+            "hideMotion": {
+              "title": "Hide motion service",
+              "type": "boolean",
+              "default": false
+            },
+            "hideContact": {
+              "title": "Hide contact service (door/window/garage)",
+              "type": "boolean",
+              "default": false
+            },
+            "hideLeak": {
+              "title": "Hide leak service",
+              "type": "boolean",
+              "default": false
+            },
+            "hideTemperature": {
+              "title": "Hide temperature service",
+              "type": "boolean",
+              "default": false
+            },
+            "hideHumidity": {
+              "title": "Hide humidity service",
+              "type": "boolean",
+              "default": false
+            },
+            "hideLight": {
+              "title": "Hide ambient light service",
+              "type": "boolean",
+              "default": false
+            },
+            "hideAlarm": {
+              "title": "Hide alarm sound service",
+              "type": "boolean",
+              "default": false
+            },
+            "exposeLeakAsContact": {
+              "title": "Expose leak sensor as a contact sensor",
+              "type": "boolean",
+              "default": false,
+              "description": "When this sensor is mounted as a leak probe, surface it in HomeKit as a ContactSensor (open/closed) instead of a LeakSensor."
+            }
+          }
+        }
+      },
+      "fobs": {
+        "title": "Per-fob overrides",
+        "type": "array",
+        "description": "One entry per fob you want to hide or customize. Each fob becomes a HomeKit accessory with one Stateless Programmable Switch per advertised button (arm, disarm, panic, etc.) so HomeKit automations can react to physical button presses.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "mac": {
+              "title": "MAC address",
+              "type": "string",
+              "required": true,
+              "description": "Visible in the Homebridge log on the first discovery."
+            },
+            "name": {
+              "title": "Display name (optional)",
+              "type": "string",
+              "description": "Override the name shown in HomeKit. Defaults to the fob name configured in UniFi Protect."
+            },
+            "hide": {
+              "title": "Hide this fob entirely",
+              "type": "boolean",
+              "default": false
+            },
+            "buttons": {
+              "title": "Buttons on this fob (override)",
+              "type": "array",
+              "description": "Explicit list of buttons this fob has. Set when the UniFi Protect API does not report featureFlags.buttons (it returns an empty object on some fob models). When set, this wins over the API. Default fallback when neither this nor the API provides values: function, arm, disarm, panic.",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "function",
+                  "alarmHubButton",
+                  "arm",
+                  "disarm",
+                  "night",
+                  "panic",
+                  "left",
+                  "right",
+                  "input1",
+                  "input2"
+                ]
+              }
+            },
+            "hideButtons": {
+              "title": "Hide specific buttons",
+              "type": "array",
+              "description": "Buttons to hide from HomeKit, applied on top of the resolved button list (config buttons > API buttons > defaults). Useful when you want most auto-discovered buttons but want to drop a few.",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "function",
+                  "alarmHubButton",
+                  "arm",
+                  "disarm",
+                  "night",
+                  "panic",
+                  "left",
+                  "right",
+                  "input1",
+                  "input2"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

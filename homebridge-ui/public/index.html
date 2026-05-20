@@ -1,0 +1,667 @@
+<!--
+  Custom UI for homebridge-unifi-sensors.
+
+  Homebridge Config UI X loads this single page when the user opens the
+  plugin's settings. It renders the connection settings as a form,
+  exposes a "Discover" button that fetches every sensor and fob from
+  the UniFi console via homebridge-ui/server.js, then lets the user
+  hide individual devices, hide individual capabilities per sensor, and
+  swap leak-mode sensors to contact sensors -- all without copying MACs
+  by hand.
+
+  This page intentionally has no framework dependency. It uses only the
+  homebridge.* APIs (already loaded by the parent UI), plain DOM, and
+  Bootstrap 4 classes that Homebridge Config UI X provides.
+-->
+<style>
+  /* -----------------------------------------------------------------
+   * Theme bridge
+   *
+   * The custom UI runs in an iframe that only inherits a subset of the
+   * parent HBCUX stylesheet. Bootstrap classes work, but the colours
+   * resolve to whatever Bootstrap's default is, which clashes with
+   * either side of HBCUX's theme switch.
+   *
+   * We define our own CSS variables and apply one of two themes via
+   * a `data-theme` attribute on <html>. The matching JS at the bottom
+   * of this file reads HBCUX's active theme from window.parent and
+   * sets the attribute so we follow HBCUX (not the OS) -- the user's
+   * preference inside Homebridge wins, even when the OS is set to the
+   * opposite.
+   *
+   * `prefers-color-scheme` is still used as a fallback when we can't
+   * read the parent (e.g. iframe isolation policies), so the page
+   * still looks reasonable out of the box.
+   * ----------------------------------------------------------------- */
+  :root,
+  :root[data-theme="dark"] {
+    --hus-bg:        #1c1f23;
+    --hus-card-bg:   #232830;
+    --hus-card-bg-2: #2a3038;
+    --hus-text:      #e6e8eb;
+    --hus-muted:     #9aa3ad;
+    --hus-border:    #3a4049;
+    --hus-input-bg:  #2a3038;
+    --hus-input-fg:  #f1f3f5;
+    --hus-focus:     #7c4dff;
+    --hus-accent:    #7c4dff;
+    --hus-ok:        #5cdb95;
+    --hus-warn:      #ffb547;
+    --hus-err:       #ff6b6b;
+    --hus-cap-bg:    #2f3744;
+    --hus-cap-fg:    #cdd6e2;
+  }
+  :root[data-theme="light"] {
+    --hus-bg:        #ffffff;
+    --hus-card-bg:   #f8f9fa;
+    --hus-card-bg-2: #eef0f3;
+    --hus-text:      #1c1f23;
+    --hus-muted:     #5a6268;
+    --hus-border:    #d4d8de;
+    --hus-input-bg:  #ffffff;
+    --hus-input-fg:  #1c1f23;
+    --hus-focus:     #7c4dff;
+    --hus-accent:    #7c4dff;
+    --hus-ok:        #2f8f5a;
+    --hus-warn:      #b06b00;
+    --hus-err:       #c0392b;
+    --hus-cap-bg:    #e9ecef;
+    --hus-cap-fg:    #495057;
+  }
+  @media (prefers-color-scheme: light) {
+    /* Only applies when JS hasn't set an explicit data-theme yet
+     * (otherwise the [data-theme="..."] rules above win on
+     * specificity). Provides a sane first paint while we read the
+     * parent theme. */
+    :root:not([data-theme]) {
+      --hus-bg:        #ffffff;
+      --hus-card-bg:   #f8f9fa;
+      --hus-card-bg-2: #eef0f3;
+      --hus-text:      #1c1f23;
+      --hus-muted:     #5a6268;
+      --hus-border:    #d4d8de;
+      --hus-input-bg:  #ffffff;
+      --hus-input-fg:  #1c1f23;
+      --hus-cap-bg:    #e9ecef;
+      --hus-cap-fg:    #495057;
+    }
+  }
+
+  /* Force our inputs onto the theme regardless of what Bootstrap's
+   * .form-control resolves to upstream. */
+  .form-control,
+  input[type="text"],
+  input[type="password"],
+  input[type="number"] {
+    background-color: var(--hus-input-bg) !important;
+    color: var(--hus-input-fg) !important;
+    border: 1px solid var(--hus-border) !important;
+    border-radius: 6px !important;
+    box-shadow: none !important;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+  }
+  .form-control:focus,
+  input[type="text"]:focus,
+  input[type="password"]:focus,
+  input[type="number"]:focus {
+    border-color: var(--hus-focus) !important;
+    box-shadow: 0 0 0 3px rgba(124, 77, 255, 0.18) !important;
+    outline: none !important;
+  }
+  input::placeholder { color: var(--hus-muted) !important; opacity: 0.8; }
+
+  /* Section layout */
+  .hus-section { margin-top: 1.5rem; }
+  .hus-section h5 {
+    margin: 0 0 0.6rem;
+    font-size: 0.95rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--hus-muted);
+    font-weight: 600;
+  }
+  .hus-section .form-group { margin-bottom: 0.85rem; }
+  .hus-section label { color: var(--hus-text); font-size: 0.875rem; }
+  .hus-section .form-text { color: var(--hus-muted) !important; font-size: 0.78rem; }
+
+  /* Sticky action bar -- keeps Discover/Save in view as the user
+   * scrolls through many sensor cards. */
+  .hus-actions {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: linear-gradient(to bottom, var(--hus-bg) 75%, transparent 100%);
+    padding: 0.75rem 0 1rem;
+    margin: 1rem 0 0.25rem;
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  /* Device card */
+  .hus-card {
+    padding: 0.85rem 1rem;
+    background: var(--hus-card-bg);
+    border: 1px solid var(--hus-border);
+    border-radius: 8px;
+    margin-bottom: 0.6rem;
+    transition: background-color 120ms ease, border-color 120ms ease;
+  }
+  .hus-card:hover { background: var(--hus-card-bg-2); }
+  .hus-card-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .hus-name { font-weight: 600; color: var(--hus-text); font-size: 0.95rem; }
+  .hus-meta { font-size: 0.78rem; color: var(--hus-muted); }
+  .hus-meta code { color: inherit; background: transparent; padding: 0; }
+
+  /* Capability badges */
+  .hus-caps { display: inline-flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.35rem; }
+  .hus-cap {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    background: var(--hus-cap-bg);
+    color: var(--hus-cap-fg);
+    font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+
+  /* Toggles row */
+  .hus-toggles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 0.35rem 1.25rem;
+    margin-top: 0.6rem;
+    padding-top: 0.55rem;
+    border-top: 1px dashed var(--hus-border);
+  }
+  .hus-toggles label,
+  .hus-buttons-list label {
+    margin: 0;
+    font-weight: normal;
+    cursor: pointer;
+    color: var(--hus-text);
+    font-size: 0.83rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .hus-toggles input[type="checkbox"],
+  .hus-buttons-list input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--hus-accent);
+  }
+  .form-check-input { accent-color: var(--hus-accent); }
+
+  /* Buttons row inside a fob card */
+  .hus-buttons-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem 1.25rem;
+    margin-top: 0.4rem;
+    font-size: 0.82rem;
+  }
+  .hus-buttons-list label.hus-known { color: var(--hus-text); }
+  .hus-buttons-list label.hus-unknown { color: var(--hus-muted); }
+
+  /* Status text next to the action buttons */
+  .hus-status { min-height: 1.2em; font-size: 0.85rem; }
+  .hus-status.ok    { color: var(--hus-ok); }
+  .hus-status.err   { color: var(--hus-err); }
+  .hus-status.warn  { color: var(--hus-warn); }
+
+  /* Empty state */
+  .hus-empty {
+    padding: 0.75rem 1rem;
+    color: var(--hus-muted);
+    font-style: italic;
+    border: 1px dashed var(--hus-border);
+    border-radius: 8px;
+  }
+
+  /* Hidden device card looks ghostly so the user can see which devices
+   * the config will suppress without losing context. */
+  .hus-hidden { opacity: 0.55; }
+  .hus-hidden .hus-card-head .hus-name::after {
+    content: " (hidden)";
+    color: var(--hus-warn);
+    font-weight: 500;
+    font-size: 0.78rem;
+  }
+
+  /* Tighten Bootstrap defaults that look out of place inside the
+   * iframe (where there's less surrounding chrome to balance them). */
+  .form-row { margin-left: 0; margin-right: 0; }
+  .form-row > .col, .form-row > [class*="col-"] { padding-left: 0; padding-right: 0.75rem; }
+  .form-row > [class*="col-"]:last-child { padding-right: 0; }
+  .btn { font-weight: 600; letter-spacing: 0.02em; }
+  .btn-primary { background-color: var(--hus-accent); border-color: var(--hus-accent); }
+  .btn-primary:hover { filter: brightness(1.12); }
+</style>
+
+<div>
+  <!-- Connection settings -->
+  <div class="hus-section">
+    <h5>UniFi Console</h5>
+    <div class="form-group">
+      <label for="hus-name">Platform Name</label>
+      <input id="hus-name" type="text" class="form-control" placeholder="UniFi Sensors">
+    </div>
+    <div class="form-group">
+      <label for="hus-host">Console URL</label>
+      <input id="hus-host" type="text" class="form-control" placeholder="https://nvr.example.com">
+      <small class="form-text text-muted">Local IP (https://192.168.x.x) or hostname. Cert is self-signed by default.</small>
+    </div>
+    <div class="form-group">
+      <label for="hus-apikey">Integration API Key</label>
+      <input id="hus-apikey" type="password" class="form-control" placeholder="Paste the key generated in UniFi Site Manager">
+    </div>
+    <div class="form-group form-check">
+      <input id="hus-tls" type="checkbox" class="form-check-input">
+      <label for="hus-tls" class="form-check-label">Validate TLS certificate (leave off for self-signed)</label>
+    </div>
+    <div class="form-group">
+      <label for="hus-poll">Poll interval (seconds)</label>
+      <input id="hus-poll" type="number" class="form-control" min="1" max="300" value="5">
+    </div>
+    <div class="form-group">
+      <label for="hus-remove-after">Auto-remove devices missing for N snapshots</label>
+      <input id="hus-remove-after" type="number" class="form-control" min="0" max="1000" value="0">
+      <small class="form-text">0 = never auto-remove (default; safest). A positive value waits that many consecutive snapshots before unregistering a missing device, protecting against transient API issues. Devices marked Hide from HomeKit below are still removed immediately.</small>
+    </div>
+    <div class="form-group form-check">
+      <input id="hus-logevents" type="checkbox" class="form-check-input" checked>
+      <label for="hus-logevents" class="form-check-label">Log device events to Homebridge log (motion, contact, leak, alarm, button presses)</label>
+    </div>
+  </div>
+
+  <!-- Discover button -->
+  <div class="hus-actions">
+    <button id="hus-discover" type="button" class="btn btn-primary">Discover devices</button>
+    <button id="hus-save" type="button" class="btn btn-success">Save</button>
+    <span id="hus-status" class="hus-status"></span>
+  </div>
+
+  <!-- Sensors -->
+  <div class="hus-section">
+    <h5>Sensors</h5>
+    <div id="hus-sensors" class="hus-empty">Click "Discover devices" to fetch the live list from your console.</div>
+  </div>
+
+  <!-- Fobs -->
+  <div class="hus-section">
+    <h5>Fobs</h5>
+    <div id="hus-fobs" class="hus-empty">Click "Discover devices" to fetch the live list from your console.</div>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------
+// Theme detection -- runs before anything else so the page renders in
+// the right theme on first paint.
+//
+// HBCUX has its own light/dark switch independent of the OS prefers-
+// color-scheme. To mirror it we inspect the parent window's body for
+// the conventional dark-mode class or data-theme attribute, and also
+// check the computed background colour as a fallback for themes that
+// don't follow either convention. The detected mode is written to a
+// data-theme attribute on our <html>, which the CSS uses to pick the
+// right variable palette.
+//
+// A MutationObserver on the parent <body> keeps the theme in sync if
+// the user flips HBCUX's theme switch without closing the dialog.
+// ---------------------------------------------------------------------
+(function setupTheme() {
+  function isLight(rgb) {
+    const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(rgb || '');
+    if (!m) return false;
+    const r = +m[1], g = +m[2], b = +m[3];
+    // Standard luma -- > 160 is "bright".
+    return (0.299 * r + 0.587 * g + 0.114 * b) > 160;
+  }
+  function detect() {
+    try {
+      const pb = window.parent && window.parent.document && window.parent.document.body;
+      if (pb) {
+        if (pb.classList.contains('dark-mode')) return 'dark';
+        if (pb.classList.contains('light-mode')) return 'light';
+        if (pb.dataset && pb.dataset.theme === 'dark') return 'dark';
+        if (pb.dataset && pb.dataset.theme === 'light') return 'light';
+        const bg = window.getComputedStyle(pb).backgroundColor;
+        if (bg) return isLight(bg) ? 'light' : 'dark';
+      }
+    } catch (e) { /* same-origin should always work; fall through anyway */ }
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+  function apply() {
+    document.documentElement.dataset.theme = detect();
+  }
+  apply();
+  try {
+    const pb = window.parent && window.parent.document && window.parent.document.body;
+    if (pb && typeof MutationObserver !== 'undefined') {
+      new MutationObserver(apply).observe(pb, { attributes: true, attributeFilter: ['class', 'data-theme'] });
+    }
+  } catch (e) { /* ignore */ }
+})();
+
+(async () => {
+  // Hide the default schema form so our custom UI is the only thing the
+  // user sees. We re-enable it implicitly on every Save by writing back
+  // to the same shared config blob.
+  homebridge.hideSchemaForm();
+
+  // ---------------------------------------------------------------------
+  // Config load
+  // ---------------------------------------------------------------------
+  //
+  // getPluginConfig returns an array of platform blocks (one per entry
+  // the user has added). For a singular platform there's at most one;
+  // we work on the first or create a fresh block.
+  let configs = await homebridge.getPluginConfig();
+  if (!Array.isArray(configs) || configs.length === 0) {
+    configs = [{ platform: 'UnifiSensors', name: 'UniFi Sensors' }];
+  }
+  const config = configs[0];
+  config.platform = 'UnifiSensors';
+  config.sensors = Array.isArray(config.sensors) ? config.sensors : [];
+  config.fobs = Array.isArray(config.fobs) ? config.fobs : [];
+
+  // Hydrate inputs from current config.
+  document.getElementById('hus-name').value = config.name || 'UniFi Sensors';
+  document.getElementById('hus-host').value = config.host || '';
+  document.getElementById('hus-apikey').value = config.apiKey || '';
+  document.getElementById('hus-tls').checked = !!config.rejectUnauthorized;
+  document.getElementById('hus-poll').value = config.pollIntervalSeconds || 5;
+  document.getElementById('hus-remove-after').value = typeof config.removeAfterMissingSnapshots === 'number' ? config.removeAfterMissingSnapshots : 0;
+  document.getElementById('hus-logevents').checked = config.logEvents !== false;
+
+  // ---------------------------------------------------------------------
+  // State held while the discovery list is rendered: the live devices
+  // plus an index by mac into the user's overrides.
+  // ---------------------------------------------------------------------
+  let discoveredSensors = [];
+  let discoveredFobs = [];
+
+  function normalizeMac(mac) {
+    return String(mac || '').toLowerCase().replace(/[^a-f0-9]/g, '');
+  }
+
+  function configEntryFor(list, mac) {
+    const n = normalizeMac(mac);
+    let entry = list.find((e) => normalizeMac(e.mac) === n);
+    if (!entry) {
+      entry = { mac: n };
+      list.push(entry);
+    }
+    return entry;
+  }
+
+  function setStatus(message, kind) {
+    const el = document.getElementById('hus-status');
+    el.textContent = message || '';
+    el.className = 'hus-status ' + (kind === 'error' ? 'err' : kind === 'ok' ? 'ok' : kind === 'warn' ? 'warn' : '');
+  }
+
+  // ---------------------------------------------------------------------
+  // Capability derivation -- mirrors platformAccessory.ts logic so the
+  // UI shows users exactly what HomeKit will end up with.
+  // ---------------------------------------------------------------------
+  function detectModel(sensor) {
+    const hasAlarm = !!(sensor.alarmSettings && sensor.alarmSettings.isEnabled);
+    const hasMotion = !!(sensor.motionSettings && sensor.motionSettings.isEnabled);
+    const hasTemp = !!(sensor.temperatureSettings && sensor.temperatureSettings.isEnabled);
+    const hasHumidity = !!(sensor.humiditySettings && sensor.humiditySettings.isEnabled);
+    const hasLight = !!(sensor.lightSettings && sensor.lightSettings.isEnabled);
+    const leakSettings = sensor.leakSettings || {};
+    const hasLeak = sensor.mountType === 'leak' || leakSettings.isInternalEnabled || leakSettings.isExternalEnabled;
+    const hasContact = ['door', 'window', 'garage'].indexOf(sensor.mountType) >= 0;
+    const senseCaps = hasMotion || hasTemp || hasHumidity || hasLight || hasLeak || hasContact;
+    if (hasAlarm && !senseCaps) return 'UP Smoke';
+    if (senseCaps) return 'UP Sense';
+    return 'UniFi Sensor';
+  }
+
+  function capabilityList(sensor) {
+    const caps = [];
+    if (sensor.motionSettings && sensor.motionSettings.isEnabled) caps.push('motion');
+    if (sensor.temperatureSettings && sensor.temperatureSettings.isEnabled) caps.push('temperature');
+    if (sensor.humiditySettings && sensor.humiditySettings.isEnabled) caps.push('humidity');
+    if (sensor.lightSettings && sensor.lightSettings.isEnabled) caps.push('light');
+    const ls = sensor.leakSettings || {};
+    if (sensor.mountType === 'leak' || ls.isInternalEnabled || ls.isExternalEnabled) caps.push('leak');
+    if (['door', 'window', 'garage'].indexOf(sensor.mountType) >= 0) caps.push('contact:' + sensor.mountType);
+    if (sensor.alarmSettings && sensor.alarmSettings.isEnabled) caps.push('alarm');
+    return caps;
+  }
+
+  // The 10 possible fob buttons per the OpenAPI spec.
+  const ALL_FOB_BUTTONS = [
+    'function', 'alarmHubButton', 'arm', 'disarm', 'night',
+    'panic', 'left', 'right', 'input1', 'input2',
+  ];
+
+  // ---------------------------------------------------------------------
+  // Rendering
+  // ---------------------------------------------------------------------
+  function renderSensors() {
+    const container = document.getElementById('hus-sensors');
+    container.innerHTML = '';
+    if (!discoveredSensors.length) {
+      container.className = 'hus-empty';
+      container.textContent = 'No sensors found.';
+      return;
+    }
+    container.className = '';
+    discoveredSensors.forEach((sensor) => {
+      const mac = normalizeMac(sensor.mac);
+      const entry = configEntryFor(config.sensors, mac);
+      const card = document.createElement('div');
+      card.className = 'hus-card';
+      if (entry.hide) card.classList.add('hus-hidden');
+
+      const caps = capabilityList(sensor);
+      const capsHtml = caps.map((c) => `<span class="hus-cap">${escapeHtml(c)}</span>`).join('');
+      const isLeakable = caps.indexOf('leak') >= 0;
+
+      card.innerHTML = `
+        <div class="hus-card-head">
+          <span class="hus-name">${escapeHtml(sensor.name || '(unnamed)')}</span>
+          <span class="hus-meta">${escapeHtml(detectModel(sensor))} &middot; ${escapeHtml(mac)} &middot; ${escapeHtml(sensor.state || '?')}</span>
+        </div>
+        <div class="hus-caps">${capsHtml || '<span class="hus-meta">no capabilities</span>'}</div>
+        <div class="hus-toggles">
+          <label><input type="checkbox" data-field="hide"> Hide from HomeKit</label>
+          ${caps.indexOf('motion') >= 0 ? `<label><input type="checkbox" data-field="hideMotion"> Hide motion</label>` : ''}
+          ${caps.some((c) => c.indexOf('contact:') === 0) ? `<label><input type="checkbox" data-field="hideContact"> Hide contact</label>` : ''}
+          ${isLeakable ? `<label><input type="checkbox" data-field="hideLeak"> Hide leak</label>` : ''}
+          ${caps.indexOf('temperature') >= 0 ? `<label><input type="checkbox" data-field="hideTemperature"> Hide temperature</label>` : ''}
+          ${caps.indexOf('humidity') >= 0 ? `<label><input type="checkbox" data-field="hideHumidity"> Hide humidity</label>` : ''}
+          ${caps.indexOf('light') >= 0 ? `<label><input type="checkbox" data-field="hideLight"> Hide light</label>` : ''}
+          ${caps.indexOf('alarm') >= 0 ? `<label><input type="checkbox" data-field="hideAlarm"> Hide alarm</label>` : ''}
+          ${isLeakable ? `<label><input type="checkbox" data-field="exposeLeakAsContact"> Expose leak as contact sensor</label>` : ''}
+        </div>
+      `;
+
+      // Wire each checkbox to its config entry.
+      card.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+        const field = cb.dataset.field;
+        cb.checked = !!entry[field];
+        cb.addEventListener('change', () => {
+          if (cb.checked) entry[field] = true; else delete entry[field];
+          if (field === 'hide') {
+            if (cb.checked) card.classList.add('hus-hidden'); else card.classList.remove('hus-hidden');
+          }
+        });
+      });
+
+      container.appendChild(card);
+    });
+  }
+
+  function renderFobs() {
+    const container = document.getElementById('hus-fobs');
+    container.innerHTML = '';
+    if (!discoveredFobs.length) {
+      container.className = 'hus-empty';
+      container.textContent = 'No fobs found.';
+      return;
+    }
+    container.className = '';
+    discoveredFobs.forEach((fob) => {
+      const mac = normalizeMac(fob.mac);
+      const entry = configEntryFor(config.fobs, mac);
+      const card = document.createElement('div');
+      card.className = 'hus-card';
+      if (entry.hide) card.classList.add('hus-hidden');
+
+      // API-reported buttons (often empty per live testing); user
+      // override; or the default set fall back. We always show all 10
+      // checkboxes so the user can enable any button the API hasn't
+      // surfaced yet.
+      const apiButtons = (fob.featureFlags && fob.featureFlags.buttons) || [];
+      const currentButtons = Array.isArray(entry.buttons) && entry.buttons.length > 0
+        ? entry.buttons
+        : (apiButtons.length > 0 ? apiButtons : ['arm', 'disarm', 'night', 'panic', 'left', 'right']);
+
+      const apiSet = new Set(apiButtons);
+      const overrideSet = new Set(currentButtons);
+
+      card.innerHTML = `
+        <div class="hus-card-head">
+          <span class="hus-name">${escapeHtml(fob.name || '(unnamed)')}</span>
+          <span class="hus-meta">UniFi Fob &middot; ${escapeHtml(mac)} &middot; ${escapeHtml(fob.state || '?')} &middot; ${escapeHtml(fob.awayState || '?')}</span>
+        </div>
+        <div class="hus-meta" style="margin-top:0.35rem">API reports: ${apiButtons.length ? apiButtons.map(escapeHtml).join(', ') : '<em>none &mdash; using defaults</em>'}</div>
+        <div class="hus-toggles">
+          <label><input type="checkbox" data-field="hide"> Hide from HomeKit</label>
+        </div>
+        <div class="hus-meta" style="margin-top:0.7rem; font-weight:600; color:var(--hus-text); letter-spacing:0.02em; text-transform:uppercase; font-size:0.72rem;">Buttons to expose <span style="font-weight:normal; text-transform:none; color:var(--hus-muted); letter-spacing:0; font-size:0.72rem;">(&middot; API reported)</span></div>
+        <div class="hus-buttons-list" data-buttons></div>
+      `;
+
+      const buttonsList = card.querySelector('[data-buttons]');
+      ALL_FOB_BUTTONS.forEach((b) => {
+        const id = `hus-${mac}-${b}`;
+        const label = document.createElement('label');
+        label.htmlFor = id;
+        label.className = apiSet.has(b) ? 'hus-known' : 'hus-unknown';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.id = id;
+        cb.checked = overrideSet.has(b);
+        cb.addEventListener('change', () => {
+          // Maintain entry.buttons as the explicit override list. When
+          // it differs from the API, it is preserved.
+          let list = Array.isArray(entry.buttons) ? entry.buttons.slice() : (apiButtons.length ? apiButtons.slice() : ['arm','disarm','night','panic','left','right']);
+          if (cb.checked) {
+            if (list.indexOf(b) < 0) list.push(b);
+          } else {
+            list = list.filter((x) => x !== b);
+          }
+          entry.buttons = list;
+        });
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(' ' + b + (apiSet.has(b) ? ' ·' : '')));
+        buttonsList.appendChild(label);
+      });
+
+      // Top-level hide checkbox.
+      const hideCb = card.querySelector('input[data-field="hide"]');
+      hideCb.checked = !!entry.hide;
+      hideCb.addEventListener('change', () => {
+        if (hideCb.checked) {
+          entry.hide = true;
+          card.classList.add('hus-hidden');
+        } else {
+          delete entry.hide;
+          card.classList.remove('hus-hidden');
+        }
+      });
+
+      container.appendChild(card);
+    });
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+  }
+
+  // ---------------------------------------------------------------------
+  // Actions
+  // ---------------------------------------------------------------------
+  document.getElementById('hus-discover').addEventListener('click', async () => {
+    // Pull current input values into config before discovering so the
+    // server has the latest credentials.
+    syncInputsToConfig();
+    setStatus('Discovering...');
+    homebridge.showSpinner();
+    try {
+      const result = await homebridge.request('/discover', {
+        host: config.host,
+        apiKey: config.apiKey,
+        rejectUnauthorized: !!config.rejectUnauthorized,
+      });
+      discoveredSensors = Array.isArray(result.sensors) ? result.sensors : [];
+      discoveredFobs = Array.isArray(result.fobs) ? result.fobs : [];
+      renderSensors();
+      renderFobs();
+      const v = result.meta && result.meta.applicationVersion;
+      setStatus(`Discovered ${discoveredSensors.length} sensor(s) and ${discoveredFobs.length} fob(s) (Protect ${v || '?'}).`, 'ok');
+    } catch (err) {
+      setStatus(err && err.message ? err.message : String(err), 'error');
+      homebridge.toast.error(err && err.message ? err.message : String(err), 'Discovery failed');
+    } finally {
+      homebridge.hideSpinner();
+    }
+  });
+
+  document.getElementById('hus-save').addEventListener('click', async () => {
+    syncInputsToConfig();
+    setStatus('Saving...');
+    try {
+      await homebridge.updatePluginConfig([config]);
+      await homebridge.savePluginConfig();
+      setStatus('Saved. Restart Homebridge to apply changes.', 'ok');
+      homebridge.toast.success('Configuration saved');
+    } catch (err) {
+      setStatus(err && err.message ? err.message : String(err), 'error');
+      homebridge.toast.error(err && err.message ? err.message : String(err), 'Save failed');
+    }
+  });
+
+  function syncInputsToConfig() {
+    config.name = document.getElementById('hus-name').value || 'UniFi Sensors';
+    config.host = document.getElementById('hus-host').value.trim();
+    config.apiKey = document.getElementById('hus-apikey').value.trim();
+    config.rejectUnauthorized = document.getElementById('hus-tls').checked;
+    config.pollIntervalSeconds = Number(document.getElementById('hus-poll').value) || 5;
+    config.removeAfterMissingSnapshots = Math.max(0, Number(document.getElementById('hus-remove-after').value) || 0);
+    config.logEvents = document.getElementById('hus-logevents').checked;
+    // Strip stale press-classification fields from older versions so
+    // they don't keep getting saved back to config.json.
+    delete config.pressClassification;
+    delete config.doublePressWindowMs;
+    delete config.longPressBurstMs;
+    delete config.longPressRepeatCount;
+    // Drop empty-mac entries (defensive against earlier UI versions).
+    config.sensors = config.sensors.filter((e) => normalizeMac(e.mac));
+    config.fobs = config.fobs.filter((e) => normalizeMac(e.mac));
+  }
+
+  // If host + apiKey are already configured, auto-discover on open so
+  // the user lands on a useful page immediately.
+  if (config.host && config.apiKey) {
+    document.getElementById('hus-discover').click();
+  }
+})();
+</script>

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.credentials
+.DS_Store
+*.log
+npm-debug.log*
+.env
+.env.*
+.vscode/
+.idea/
+coverage/
+test/
+*.tgz

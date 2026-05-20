@@ -1,0 +1,63 @@
+{
+  "name": "homebridge-unifi-sensors",
+  "displayName": "UniFi Sensors",
+  "version": "0.5.0",
+  "customUi": true,
+  "description": "Homebridge dynamic platform plugin for UniFi Protect sensors (UP Sense) using the official local Integration API.",
+  "license": "Apache-2.0",
+  "main": "dist/index.js",
+  "engines": {
+    "node": "^20.0.0 || ^22.0.0 || ^24.0.0",
+    "homebridge": "^1.8.0 || ^2.0.0"
+  },
+  "scripts": {
+    "build": "rimraf dist && tsc",
+    "lint": "eslint src test --ext .ts",
+    "watch": "nodemon",
+    "dev:smoke": "ts-node test/smoke.ts",
+    "prepublishOnly": "npm run lint && npm run build"
+  },
+  "keywords": [
+    "homebridge-plugin",
+    "homebridge",
+    "unifi",
+    "ubiquiti",
+    "unifi-protect",
+    "sensor",
+    "up-sense",
+    "leak",
+    "contact",
+    "motion",
+    "homekit"
+  ],
+  "dependencies": {
+    "@homebridge/plugin-ui-utils": "^2.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "@typescript-eslint/eslint-plugin": "^8.18.0",
+    "@typescript-eslint/parser": "^8.18.0",
+    "eslint": "^8.57.1",
+    "homebridge": "^1.8.5",
+    "nodemon": "^3.1.9",
+    "rimraf": "^6.0.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.2"
+  },
+  "files": [
+    "dist",
+    "homebridge-ui",
+    "config.schema.json",
+    "LICENSE",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simplytoast1/homebridge-unifi-sensors.git"
+  },
+  "bugs": {
+    "url": "https://github.com/simplytoast1/homebridge-unifi-sensors/issues"
+  }
+}
