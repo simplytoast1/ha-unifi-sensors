@@ -17,6 +17,7 @@ import asyncio
 from datetime import timedelta
 import json
 import logging
+import time
 from typing import Any
 
 import aiohttp
@@ -72,6 +73,9 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.relays: dict[str, dict[str, Any]] = {}
         # Protect application version, surfaced as the device sw_version.
         self.version = "0.0.0"
+        # mac -> epoch ms of the last glass-break event. Glass break arrives on
+        # the events websocket only; the sensor object has no field for it.
+        self.glass_break_at: dict[str, float] = {}
 
         self._sensor_id_to_mac: dict[str, str] = {}
         self._fob_id_to_mac: dict[str, str] = {}
@@ -222,23 +226,48 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @callback
     def _handle_events(self, raw: str) -> None:
-        """Route fob button presses to the event entities."""
+        """Route fob button presses and glass-break events to entities."""
         parsed = _safe_json(raw)
         if parsed is None:
             return
-        for event in _extract_button_events(parsed):
-            button = event["metadata"]["button"]["text"]
-            device_id = event.get("device")
-            # The device id may be the fob or its paired alarm hub. Resolve it
-            # to a fob mac when we can; otherwise dispatch with mac=None so
-            # every fob that advertises the button fires (matches one fob, the
-            # common case, exactly).
-            mac = self._fob_id_to_mac.get(device_id or "")
-            async_dispatcher_send(
-                self.hass,
-                SIGNAL_FOB_BUTTON.format(self.config_entry.entry_id),
-                mac,
-                button,
+        glass_changed = False
+        for event in _extract_events(parsed):
+            etype = event.get("type")
+            meta = event.get("metadata") or {}
+
+            # Fob button press. The device id may be the fob or its paired
+            # alarm hub; resolve to a fob mac when we can, otherwise dispatch
+            # with mac=None so every fob advertising the button fires (matches
+            # the single-fob case exactly).
+            button = (meta.get("button") or {}).get("text")
+            if etype in ("alarmHubButtonPress", "sensorButtonPressed") and button:
+                mac = self._fob_id_to_mac.get(event.get("device") or "")
+                async_dispatcher_send(
+                    self.hass,
+                    SIGNAL_FOB_BUTTON.format(self.config_entry.entry_id),
+                    mac,
+                    button,
+                )
+                continue
+
+            # Glass break. Arrives as a sensor-level sensorAlarm (device is the
+            # sensor) or an alarm-hub event (the sensor id is in
+            # metadata.deviceId). There is no glass-break field on the sensor
+            # object, so stamp the time here and let the entity hold it.
+            alarm_type = (meta.get("alarmType") or {}).get("text")
+            if etype == "alarmHubGlassBreak" or alarm_type == "glassBreak":
+                sensor_id = (meta.get("deviceId") or {}).get("text") or event.get(
+                    "device"
+                )
+                mac = self._sensor_id_to_mac.get(sensor_id or "")
+                if mac:
+                    self.glass_break_at[mac] = _event_time(event)
+                    glass_changed = True
+                    _LOGGER.debug("Glass break detected on sensor %s", mac)
+
+        if glass_changed:
+            self.async_set_updated_data(
+                {"sensors": self.sensors, "fobs": self.fobs, "relays": self.relays}
             )
 
 
@@ -289,17 +318,15 @@ def _extract_devices(
     return sensors, fobs, relays
 
 
-def _extract_button_events(parsed: Any) -> list[dict[str, Any]]:
-    """Pull every fob button press event out of a payload."""
-    events: list[dict[str, Any]] = []
+def _event_time(event: dict[str, Any]) -> float:
+    """Epoch ms for an event: its ``start`` if present, else now."""
+    start = event.get("start")
+    return float(start) if isinstance(start, (int, float)) else time.time() * 1000
 
-    def is_button_event(obj: dict[str, Any]) -> bool:
-        if obj.get("modelKey") != "event":
-            return False
-        if obj.get("type") not in ("alarmHubButtonPress", "sensorButtonPressed"):
-            return False
-        button = (obj.get("metadata") or {}).get("button")
-        return isinstance(button, dict) and bool(button.get("text"))
+
+def _extract_events(parsed: Any) -> list[dict[str, Any]]:
+    """Pull every event-log record (modelKey 'event') out of a payload."""
+    events: list[dict[str, Any]] = []
 
     def walk(node: Any) -> None:
         if isinstance(node, list):
@@ -308,7 +335,7 @@ def _extract_button_events(parsed: Any) -> list[dict[str, Any]]:
             return
         if not isinstance(node, dict):
             return
-        if is_button_event(node):
+        if node.get("modelKey") == "event" and node.get("type"):
             events.append(node)
             return
         for key in ("item", "items"):

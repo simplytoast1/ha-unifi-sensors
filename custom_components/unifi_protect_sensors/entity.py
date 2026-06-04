@@ -12,35 +12,48 @@ from .coordinator import UnifiProtectCoordinator
 
 
 def detect_model(sensor: dict[str, Any]) -> str:
-    """Infer the product name from the live capability set.
+    """Infer a descriptive device type from the live capability set.
 
     The Integration API only reports ``modelKey: "sensor"`` with no model or
-    marketing name field, so we infer it from the public fields:
-
-    * UP Smoke: alarm enabled, every other capability disabled.
-    * UP Sense: anything with motion, temperature, humidity, light, leak or
-      contact (the combination sensor, and by far the most common variant).
-    * UniFi Sensor: fallback when the capability set is empty.
+    marketing name field, so the type is inferred from which capabilities the
+    sensor has enabled. This reflects the deployed function, not a verified
+    hardware model (the API does not expose one).
     """
-    has_alarm = bool((sensor.get("alarmSettings") or {}).get("isEnabled"))
-    has_motion = bool((sensor.get("motionSettings") or {}).get("isEnabled"))
-    has_temp = bool((sensor.get("temperatureSettings") or {}).get("isEnabled"))
-    has_humidity = bool((sensor.get("humiditySettings") or {}).get("isEnabled"))
-    has_light = bool((sensor.get("lightSettings") or {}).get("isEnabled"))
+
+    def enabled(key: str) -> bool:
+        return bool((sensor.get(key) or {}).get("isEnabled"))
+
     mount = sensor.get("mountType")
-    leak = sensor.get("leakSettings") or {}
+    leak_settings = sensor.get("leakSettings") or {}
+    has_glass = enabled("glassBreakSettings")
+    has_alarm = enabled("alarmSettings")
+    has_motion = enabled("motionSettings")
+    has_environment = (
+        enabled("temperatureSettings")
+        or enabled("humiditySettings")
+        or enabled("lightSettings")
+    )
     has_leak = (
         mount == "leak"
-        or bool(leak.get("isInternalEnabled"))
-        or bool(leak.get("isExternalEnabled"))
+        or bool(leak_settings.get("isInternalEnabled"))
+        or bool(leak_settings.get("isExternalEnabled"))
     )
     has_contact = mount in ("door", "window", "garage")
 
-    sense_caps = has_motion or has_temp or has_humidity or has_light or has_leak or has_contact
-    if has_alarm and not sense_caps:
-        return "UP Smoke"
-    if sense_caps:
+    if has_glass:
+        return "Glass Break Sensor"
+    if has_contact:
+        return "Contact Sensor"
+    if has_leak:
+        return "Leak Sensor"
+    if has_alarm and not (has_motion or has_environment):
+        return "Smoke/CO Alarm"
+    if has_motion and has_environment:
         return "UP Sense"
+    if has_motion:
+        return "Motion Sensor"
+    if has_environment:
+        return "Environmental Sensor"
     return "UniFi Sensor"
 
 
@@ -83,7 +96,6 @@ class _UnifiProtectBaseEntity(CoordinatorEntity[UnifiProtectCoordinator]):
             model=model,
             name=name,
             sw_version=self.coordinator.version,
-            via_device=(DOMAIN, self.coordinator.config_entry.entry_id),
         )
 
 

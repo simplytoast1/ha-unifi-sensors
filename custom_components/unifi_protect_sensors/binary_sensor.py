@@ -17,7 +17,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later
 
-from .const import ALARM_HOLD, LEAK_HOLD, MOTION_HOLD
+from .const import ALARM_HOLD, GLASS_HOLD, LEAK_HOLD, MOTION_HOLD
 from .coordinator import UnifiProtectConfigEntry, UnifiProtectCoordinator
 from .entity import UnifiProtectSensorEntity, battery_status
 
@@ -170,7 +170,7 @@ async def async_setup_entry(
 
     @callback
     def _discover() -> None:
-        new: list[UnifiProtectBinarySensor] = []
+        new: list[BinarySensorEntity] = []
         for mac, device in coordinator.sensors.items():
             for description in BINARY_SENSOR_DESCRIPTIONS:
                 if not description.exists_fn(device):
@@ -180,6 +180,11 @@ async def async_setup_entry(
                     continue
                 known.add(unique_id)
                 new.append(UnifiProtectBinarySensor(coordinator, mac, description))
+            if (device.get("glassBreakSettings") or {}).get("isEnabled"):
+                unique_id = f"{mac}_glass_break"
+                if unique_id not in known:
+                    known.add(unique_id)
+                    new.append(UnifiProtectGlassBreakSensor(coordinator, mac))
         if new:
             async_add_entities(new)
 
@@ -254,6 +259,74 @@ class UnifiProtectBinarySensor(UnifiProtectSensorEntity, BinarySensorEntity):
         if until is None:
             return
         delay = until - time.time()
+        if delay > 0:
+            self._unsub_clear = async_call_later(self.hass, delay, self._clear)
+
+    @callback
+    def _clear(self, _now: Any) -> None:
+        self._unsub_clear = None
+        self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Cancel any pending auto clear timer."""
+        if self._unsub_clear is not None:
+            self._unsub_clear()
+            self._unsub_clear = None
+        await super().async_will_remove_from_hass()
+
+
+class UnifiProtectGlassBreakSensor(UnifiProtectSensorEntity, BinarySensorEntity):
+    """Glass-break detection for a sensor, driven by the events websocket.
+
+    The Integration API has no glass-break state field on the sensor object, so
+    the coordinator stamps ``glass_break_at`` when a glass-break event arrives
+    and this entity holds the on state for a short window, then auto clears.
+    """
+
+    _attr_name = "Glass break"
+    _attr_icon = "mdi:glass-fragile"
+
+    def __init__(self, coordinator: UnifiProtectCoordinator, mac: str) -> None:
+        """Initialise the glass-break sensor."""
+        super().__init__(coordinator, mac)
+        self._attr_unique_id = f"{mac}_glass_break"
+        self._unsub_clear: Callable[[], None] | None = None
+
+    @property
+    def available(self) -> bool:
+        """Available while the sensor exists and glass break is enabled."""
+        device = self._device
+        return (
+            self.coordinator.last_update_success
+            and device is not None
+            and bool((device.get("glassBreakSettings") or {}).get("isEnabled"))
+        )
+
+    @property
+    def is_on(self) -> bool:
+        """On for GLASS_HOLD seconds after the last glass-break event."""
+        at = self.coordinator.glass_break_at.get(self._mac)
+        return bool(at) and (_now_ms() - at) < GLASS_HOLD * 1000
+
+    async def async_added_to_hass(self) -> None:
+        """Arm the auto clear timer for whatever state we start in."""
+        await super().async_added_to_hass()
+        self._schedule_clear()
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._schedule_clear()
+        super()._handle_coordinator_update()
+
+    @callback
+    def _schedule_clear(self) -> None:
+        if self._unsub_clear is not None:
+            self._unsub_clear()
+            self._unsub_clear = None
+        at = self.coordinator.glass_break_at.get(self._mac)
+        if not at:
+            return
+        delay = at / 1000 + GLASS_HOLD - time.time()
         if delay > 0:
             self._unsub_clear = async_call_later(self.hass, delay, self._clear)
 

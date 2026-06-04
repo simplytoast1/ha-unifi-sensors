@@ -27,4 +27,5 @@ async def async_get_config_entry_diagnostics(
         "sensors": async_redact_data(coordinator.sensors, TO_REDACT),
         "fobs": async_redact_data(coordinator.fobs, TO_REDACT),
         "relays": async_redact_data(coordinator.relays, TO_REDACT),
+        "glass_break_at": coordinator.glass_break_at,
     }

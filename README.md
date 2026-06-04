@@ -30,13 +30,13 @@ The UP Sense is a true combination device, so a single physical sensor can repor
 
 ## Supported devices
 
-The integration reads the UniFi Protect Integration API and maps each device by the capabilities it reports live, not by a fixed model list. The API does not return a model name for sensors, so the model shown on the Home Assistant device is inferred from those capabilities (most sensors read as "UP Sense").
+The integration reads the UniFi Protect Integration API and maps each device by the capabilities it reports live, not by a fixed model list. The API does not return a model name for sensors, so the model shown on the Home Assistant device is inferred from those capabilities (for example Leak Sensor, Motion Sensor, Glass Break Sensor, Contact Sensor, or Environmental Sensor). This is the deployed function, not a verified hardware model.
 
 | UniFi device | Support | Entities produced |
 | --- | --- | --- |
 | Protect All-In-One Sensor (UP-Sense) | Full, hardware verified | Motion, contact, leak, alarm sound (smoke/CO audible), temperature, humidity, ambient light, battery, connectivity |
 | Leak, Environmental, Entry and Motion sensors | Full, by capability | Whichever the device reports: leak, temperature, humidity, light, motion, contact |
-| Glass Break Sensor (USL-GlassBreak) | Partial | Appears as a sensor and reports its motion. The dedicated glass-break event is not surfaced yet |
+| Glass Break Sensor (USL-GlassBreak) | Full | Glass-break binary sensor (from the events stream) plus its motion |
 | Relay / I-O device (USL-Relay) | Full | One switch entity per output, with on and off control |
 | Remote Control KeyFob (USL-FOB) | Full | One event entity per button (arm, disarm, night, panic, and so on). Only appears when a fob is paired |
 

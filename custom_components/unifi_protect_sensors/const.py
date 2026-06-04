@@ -36,6 +36,7 @@ PLATFORMS: list[Platform] = [
 MOTION_HOLD = 5
 ALARM_HOLD = 5
 LEAK_HOLD = 60
+GLASS_HOLD = 5
 
 # Every button a fob may advertise (the OpenAPI enum).
 FOB_BUTTONS = [

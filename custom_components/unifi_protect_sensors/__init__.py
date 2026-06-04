@@ -15,7 +15,6 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_VERIFY_SSL,
     DOMAIN,
-    MANUFACTURER,
     PLATFORMS,
 )
 from .coordinator import UnifiProtectConfigEntry, UnifiProtectCoordinator
@@ -33,17 +32,14 @@ async def async_setup_entry(
     coordinator = UnifiProtectCoordinator(hass, entry, client, scan_interval)
     await coordinator.async_config_entry_first_refresh()
 
-    # Register the console itself as the hub device so each sensor/fob links
-    # back to it via_device.
-    dr.async_get(hass).async_get_or_create(
-        config_entry_id=entry.entry_id,
-        identifiers={(DOMAIN, entry.entry_id)},
-        manufacturer=MANUFACTURER,
-        name="UniFi Protect",
-        model="UniFi Protect Integration API",
-        sw_version=coordinator.version,
-        configuration_url=entry.data[CONF_HOST],
+    # Devices are registered standalone (no hub parent). Remove the legacy
+    # console hub device created by earlier versions so it does not linger.
+    device_registry = dr.async_get(hass)
+    legacy_hub = device_registry.async_get_device(
+        identifiers={(DOMAIN, entry.entry_id)}
     )
+    if legacy_hub is not None:
+        device_registry.async_remove_device(legacy_hub.id)
 
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
