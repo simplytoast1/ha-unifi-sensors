@@ -16,6 +16,7 @@ here, keeping the surface area small.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -139,3 +140,42 @@ class UnifiProtectApiClient:
     async def async_get_fobs(self) -> list[dict[str, Any]]:
         """GET /fobs. The full list of paired key fobs."""
         return self._unwrap(await self._get("fobs"))
+
+    async def async_get_relays(self) -> list[dict[str, Any]]:
+        """GET /relays. UniFi relay (I/O) devices and their outputs."""
+        return self._unwrap(await self._get("relays"))
+
+    async def async_activate_relay_output(
+        self, relay_id: str, output_id: int, state: str
+    ) -> None:
+        """Set a relay output on or off.
+
+        POST /relays/{id}/outputs/{outputId}/activate with {"state": ...}.
+        """
+        await self._post(
+            f"relays/{relay_id}/outputs/{output_id}/activate", {"state": state}
+        )
+
+    async def _post(self, path: str, json_body: Any | None = None) -> Any:
+        url = self._base + path
+        try:
+            async with self._session.post(
+                url,
+                headers=self._headers,
+                json=json_body,
+                timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
+            ) as resp:
+                if resp.status in (401, 403):
+                    raise UnifiProtectAuthError(
+                        f"Authentication failed (HTTP {resp.status})", resp.status
+                    )
+                if not 200 <= resp.status < 300:
+                    body = await resp.text()
+                    raise UnifiProtectApiError(
+                        f"POST {path} failed: HTTP {resp.status}: {body[:200]}",
+                        resp.status,
+                    )
+                text = await resp.text()
+                return json.loads(text) if text else None
+        except aiohttp.ClientError as err:
+            raise UnifiProtectApiError(f"POST {path} failed: {err}") from err

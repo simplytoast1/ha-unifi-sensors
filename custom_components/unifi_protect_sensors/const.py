@@ -26,6 +26,7 @@ PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.EVENT,
     Platform.SENSOR,
+    Platform.SWITCH,
 ]
 
 # Hold windows (seconds) for momentary, timestamp-only events. The Integration

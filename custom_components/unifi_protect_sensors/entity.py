@@ -113,3 +113,17 @@ class UnifiProtectFobEntity(_UnifiProtectBaseEntity):
         device = self._device or {}
         name = device.get("name") or f"UniFi Fob {self._mac}"
         return self._build_device_info(model="UniFi Fob", name=name)
+
+
+class UnifiProtectRelayEntity(_UnifiProtectBaseEntity):
+    """Base entity backed by a UniFi relay (I/O) device."""
+
+    @property
+    def _device(self) -> dict[str, Any] | None:
+        return self.coordinator.relays.get(self._mac)
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        device = self._device or {}
+        name = device.get("name") or f"UniFi Relay {self._mac}"
+        return self._build_device_info(model="UniFi Relay", name=name)

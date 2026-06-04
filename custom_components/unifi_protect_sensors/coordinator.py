@@ -69,11 +69,13 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # mac -> latest full device object.
         self.sensors: dict[str, dict[str, Any]] = {}
         self.fobs: dict[str, dict[str, Any]] = {}
+        self.relays: dict[str, dict[str, Any]] = {}
         # Protect application version, surfaced as the device sw_version.
         self.version = "0.0.0"
 
         self._sensor_id_to_mac: dict[str, str] = {}
         self._fob_id_to_mac: dict[str, str] = {}
+        self._relay_id_to_mac: dict[str, str] = {}
         # ids seen on the websocket that the REST snapshot does not return, so
         # we trigger at most one refetch per id rather than a refetch storm.
         self._unknown_ids: set[str] = set()
@@ -94,38 +96,42 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except UnifiProtectApiError as err:
             raise UpdateFailed(str(err)) from err
 
+        # Relays are a newer endpoint; tolerate consoles that do not expose it.
+        try:
+            relays = await self.client.async_get_relays()
+        except UnifiProtectAuthError as err:
+            raise ConfigEntryAuthFailed(str(err)) from err
+        except UnifiProtectApiError:
+            relays = []
+
         self.version = meta.get("applicationVersion") or self.version
-        self._ingest_snapshot(sensors, fobs)
-        return {"sensors": self.sensors, "fobs": self.fobs}
+        self._ingest_snapshot(sensors, fobs, relays)
+        return {"sensors": self.sensors, "fobs": self.fobs, "relays": self.relays}
 
     @callback
     def _ingest_snapshot(
-        self, sensors: list[dict[str, Any]], fobs: list[dict[str, Any]]
+        self,
+        sensors: list[dict[str, Any]],
+        fobs: list[dict[str, Any]],
+        relays: list[dict[str, Any]],
     ) -> None:
-        new_sensors: dict[str, dict[str, Any]] = {}
-        sensor_index: dict[str, str] = {}
-        for sensor in sensors:
-            mac = normalize_mac(sensor.get("mac"))
-            if not mac:
-                continue
-            new_sensors[mac] = sensor
-            if sensor.get("id"):
-                sensor_index[sensor["id"]] = mac
+        def indexed(
+            items: list[dict[str, Any]],
+        ) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+            store: dict[str, dict[str, Any]] = {}
+            id_to_mac: dict[str, str] = {}
+            for item in items:
+                mac = normalize_mac(item.get("mac"))
+                if not mac:
+                    continue
+                store[mac] = item
+                if item.get("id"):
+                    id_to_mac[item["id"]] = mac
+            return store, id_to_mac
 
-        new_fobs: dict[str, dict[str, Any]] = {}
-        fob_index: dict[str, str] = {}
-        for fob in fobs:
-            mac = normalize_mac(fob.get("mac"))
-            if not mac:
-                continue
-            new_fobs[mac] = fob
-            if fob.get("id"):
-                fob_index[fob["id"]] = mac
-
-        self.sensors = new_sensors
-        self.fobs = new_fobs
-        self._sensor_id_to_mac = sensor_index
-        self._fob_id_to_mac = fob_index
+        self.sensors, self._sensor_id_to_mac = indexed(sensors)
+        self.fobs, self._fob_id_to_mac = indexed(fobs)
+        self.relays, self._relay_id_to_mac = indexed(relays)
         self._unknown_ids.clear()
 
     # ------------------------------------------------------------------
@@ -181,14 +187,18 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         parsed = _safe_json(raw)
         if parsed is None:
             return
-        sensors, fobs = _extract_devices(parsed)
+        sensors, fobs, relays = _extract_devices(parsed)
         changed = False
         for partial in sensors:
             changed |= self._merge_device(partial, self.sensors, self._sensor_id_to_mac)
         for partial in fobs:
             changed |= self._merge_device(partial, self.fobs, self._fob_id_to_mac)
+        for partial in relays:
+            changed |= self._merge_device(partial, self.relays, self._relay_id_to_mac)
         if changed:
-            self.async_set_updated_data({"sensors": self.sensors, "fobs": self.fobs})
+            self.async_set_updated_data(
+                {"sensors": self.sensors, "fobs": self.fobs, "relays": self.relays}
+            )
 
     def _merge_device(
         self,
@@ -244,14 +254,15 @@ def _safe_json(raw: str) -> Any:
 
 def _extract_devices(
     parsed: Any,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Walk an arbitrary payload and split out sensor and fob objects.
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Walk an arbitrary payload and split out sensor, fob and relay objects.
 
     The ``modelKey`` field is the discriminator. Other device types (camera,
     chime, light, ...) are ignored: this integration does not expose them.
     """
     sensors: list[dict[str, Any]] = []
     fobs: list[dict[str, Any]] = []
+    relays: list[dict[str, Any]] = []
 
     def walk(node: Any) -> None:
         if isinstance(node, list):
@@ -267,12 +278,15 @@ def _extract_devices(
             if node.get("modelKey") == "fob":
                 fobs.append(node)
                 return
-        for key in ("item", "items", "data", "sensors", "fobs"):
+            if node.get("modelKey") == "relay":
+                relays.append(node)
+                return
+        for key in ("item", "items", "data", "sensors", "fobs", "relays"):
             if key in node:
                 walk(node[key])
 
     walk(parsed)
-    return sensors, fobs
+    return sensors, fobs, relays
 
 
 def _extract_button_events(parsed: Any) -> list[dict[str, Any]]:

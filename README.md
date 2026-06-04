@@ -30,19 +30,19 @@ The UP Sense is a true combination device, so a single physical sensor can repor
 
 ## Supported devices
 
-The integration reads the UniFi Protect Integration API's sensor and fob endpoints and maps each device by the capabilities it reports live, not by a fixed model list. The Integration API does not return a model name for sensors, so the model shown on the Home Assistant device is inferred from those capabilities (UP Sense, UP Smoke, or a generic UniFi Sensor).
+The integration reads the UniFi Protect Integration API and maps each device by the capabilities it reports live, not by a fixed model list. The API does not return a model name for sensors, so the model shown on the Home Assistant device is inferred from those capabilities (most sensors read as "UP Sense").
 
 | UniFi device | Support | Entities produced |
 | --- | --- | --- |
 | Protect All-In-One Sensor (UP-Sense) | Full, hardware verified | Motion, contact, leak, alarm sound (smoke/CO audible), temperature, humidity, ambient light, battery, connectivity |
-| Remote Control KeyFob (USL-FOB) | Full, hardware verified | One event entity per button (arm, disarm, night, panic, left, right, and so on) |
-| Entry Sensor (USL-Entry) | By capability | Contact (door, window) |
-| Motion Sensor (USL-Motion) | By capability | Motion |
-| Environmental Sensor (USL-Environmental) | By capability | Leak, temperature, humidity, ambient light |
+| Leak, Environmental, Entry and Motion sensors | Full, by capability | Whichever the device reports: leak, temperature, humidity, light, motion, contact |
+| Glass Break Sensor (USL-GlassBreak) | Partial | Appears as a sensor and reports its motion. The dedicated glass-break event is not surfaced yet |
+| Relay / I-O device (USL-Relay) | Full | One switch entity per output, with on and off control |
+| Remote Control KeyFob (USL-FOB) | Full | One event entity per button (arm, disarm, night, panic, and so on). Only appears when a fob is paired |
 
-"By capability" means: if your console exposes that device through the Protect Integration API reporting one of the capabilities above, the matching entities are created automatically. The all-in-one sensor and the key fob are the two verified against real hardware. The others are mapped generically from whatever the API reports, so they were not hardware tested here.
+The mapping is capability based: whatever a sensor reports (motion, contact, leak, temperature, humidity, ambient light, alarm sound) becomes the matching Home Assistant entity, regardless of which physical model it is. Relay outputs are exposed as switches you can toggle.
 
-Not handled by this integration: cameras, doorbells, NVRs, sirens, relays, the alarm hub, and glass-break detection (the sensor API has no glass-break capability). Cameras and doorbells are covered by Home Assistant's built-in UniFi Protect integration, which can run alongside this one.
+Not handled: cameras, doorbells, NVRs, lights, chimes, speakers, sirens, and the alarm hub. Cameras and doorbells are covered by Home Assistant's built-in UniFi Protect integration, which can run alongside this one.
 
 ## Requirements
 
