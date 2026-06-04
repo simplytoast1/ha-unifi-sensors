@@ -1,0 +1,48 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "UniFi Protect Sensors",
+        "description": "Connect to your UniFi console's local Integration API. Generate an API key in the UniFi UI under Settings, Control Plane, Integrations (or in Protect under Settings, API).",
+        "data": {
+          "host": "Console URL",
+          "api_key": "Integration API key",
+          "verify_ssl": "Verify TLS certificate"
+        },
+        "data_description": {
+          "host": "Base URL of your console, including the scheme. Most consoles use https on the default port.",
+          "verify_ssl": "Most consoles use a self signed certificate. Leave off unless you have installed a trusted one."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Update API key",
+        "description": "The UniFi console rejected the saved API key. Enter a new Integration API key.",
+        "data": {
+          "api_key": "Integration API key"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the console. Check the URL and that the console is reachable.",
+      "invalid_auth": "The console rejected the API key.",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This console is already configured.",
+      "reauth_successful": "Re-authentication was successful."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "data": {
+          "scan_interval": "Polling fallback interval (seconds)"
+        },
+        "data_description": {
+          "scan_interval": "How often to poll the console when the websocket push stream is unavailable. The integration always prefers the websocket."
+        }
+      }
+    }
+  }
+}
