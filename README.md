@@ -75,7 +75,7 @@ Discovered sensors and fobs appear as devices automatically. The polling fallbac
 ## How it works
 
 - **Identity** is by MAC address. The MAC is the device serial and the stable key used to reconcile devices across restarts.
-- **Names** come from UniFi at first discovery. After that you are free to rename devices and entities in Home Assistant; the integration does not overwrite your changes.
+- **Names and discovery are live, no reload needed.** New sensors, fobs, and relays are detected and added automatically. Renaming a device in UniFi updates it in Home Assistant live; a name you set in Home Assistant takes precedence and is kept.
 - **Deletion** is driven by the REST snapshot: when a sensor or fob is removed (or factory reset) in Protect, it drops out of the snapshot and its entities go unavailable. You can then remove the device from Home Assistant.
 - **Momentary events** (motion, alarm, leak) are stamped with a timestamp by the API but have no explicit "ended" signal, so the integration holds the state on for a short window and then clears it.
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -18,6 +18,7 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import UnifiProtectConfigEntry, UnifiProtectCoordinator
+from .entity import detect_model
 
 
 async def async_setup_entry(
@@ -44,6 +45,39 @@ async def async_setup_entry(
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await coordinator.async_start()
+
+    # Keep device names, models and firmware in sync without a reload when they
+    # change in UniFi. Home Assistant only applies device_info at entity
+    # creation, so reconcile the device registry on every coordinator update. A
+    # name you set in Home Assistant is preserved: it lives in name_by_user,
+    # which this never touches.
+    @callback
+    def _reconcile_devices() -> None:
+        version = coordinator.version
+
+        def sync(mac: str, name: str, model: str) -> None:
+            device = device_registry.async_get_device(identifiers={(DOMAIN, mac)})
+            if device is None:
+                return
+            updates: dict[str, str] = {}
+            if name and device.name != name:
+                updates["name"] = name
+            if model and device.model != model:
+                updates["model"] = model
+            if version and device.sw_version != version:
+                updates["sw_version"] = version
+            if updates:
+                device_registry.async_update_device(device.id, **updates)
+
+        for mac, sensor in coordinator.sensors.items():
+            sync(mac, sensor.get("name") or f"UniFi Sensor {mac}", detect_model(sensor))
+        for mac, fob in coordinator.fobs.items():
+            sync(mac, fob.get("name") or f"UniFi Fob {mac}", "UniFi Fob")
+        for mac, relay in coordinator.relays.items():
+            sync(mac, relay.get("name") or f"UniFi Relay {mac}", "UniFi Relay")
+
+    _reconcile_devices()
+    entry.async_on_unload(coordinator.async_add_listener(_reconcile_devices))
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
