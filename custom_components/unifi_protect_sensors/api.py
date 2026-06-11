@@ -59,6 +59,8 @@ class UnifiProtectApiClient:
         session created with ``verify_ssl=False``).
         """
         host = host.strip().rstrip("/")
+        if "://" not in host:
+            host = "https://" + host
         self._session = session
         self._base = host + INTEGRATION_PATH
         self._api_key = api_key.strip()
@@ -116,7 +118,7 @@ class UnifiProtectApiClient:
                 if resp.status == 204:
                     return None
                 return await resp.json(content_type=None)
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             raise UnifiProtectApiError(f"GET {path} failed: {err}") from err
 
     async def async_get_meta(self) -> dict[str, Any]:
@@ -177,5 +179,5 @@ class UnifiProtectApiClient:
                     )
                 text = await resp.text()
                 return json.loads(text) if text else None
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
             raise UnifiProtectApiError(f"POST {path} failed: {err}") from err

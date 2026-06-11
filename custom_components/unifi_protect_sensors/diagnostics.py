@@ -18,14 +18,16 @@ async def async_get_config_entry_diagnostics(
 ) -> dict[str, Any]:
     """Return diagnostics for a config entry."""
     coordinator = entry.runtime_data
+    # Device maps are keyed by mac, which TO_REDACT is meant to hide, so emit
+    # plain lists: async_redact_data only redacts values, never dict keys.
     return {
         "entry": {
             "data": async_redact_data(dict(entry.data), TO_REDACT),
             "options": dict(entry.options),
         },
         "protect_version": coordinator.version,
-        "sensors": async_redact_data(coordinator.sensors, TO_REDACT),
-        "fobs": async_redact_data(coordinator.fobs, TO_REDACT),
-        "relays": async_redact_data(coordinator.relays, TO_REDACT),
-        "glass_break_at": coordinator.glass_break_at,
+        "sensors": async_redact_data(list(coordinator.sensors.values()), TO_REDACT),
+        "fobs": async_redact_data(list(coordinator.fobs.values()), TO_REDACT),
+        "relays": async_redact_data(list(coordinator.relays.values()), TO_REDACT),
+        "glass_break_at": list(coordinator.glass_break_at.values()),
     }

@@ -136,6 +136,9 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.sensors, self._sensor_id_to_mac = indexed(sensors)
         self.fobs, self._fob_id_to_mac = indexed(fobs)
         self.relays, self._relay_id_to_mac = indexed(relays)
+        self.glass_break_at = {
+            mac: at for mac, at in self.glass_break_at.items() if mac in self.sensors
+        }
         self._unknown_ids.clear()
 
     # ------------------------------------------------------------------
@@ -167,7 +170,15 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     _LOGGER.debug("Websocket connected: %s", url)
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
-                            handler(msg.data)
+                            # A bad payload must not tear down the connection.
+                            try:
+                                handler(msg.data)
+                            except Exception:  # noqa: BLE001
+                                _LOGGER.warning(
+                                    "Error handling websocket message from %s",
+                                    url,
+                                    exc_info=True,
+                                )
                         elif msg.type in (
                             aiohttp.WSMsgType.CLOSE,
                             aiohttp.WSMsgType.CLOSED,
@@ -182,7 +193,7 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self._closing:
                 break
             delay = min(WS_BACKOFF_MAX, WS_BACKOFF_BASE * 2**attempts)
-            attempts += 1
+            attempts = min(attempts + 1, 4)
             await asyncio.sleep(delay)
 
     @callback
@@ -241,7 +252,12 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # the single-fob case exactly).
             button = (meta.get("button") or {}).get("text")
             if etype in ("alarmHubButtonPress", "sensorButtonPressed") and button:
-                mac = self._fob_id_to_mac.get(event.get("device") or "")
+                device_id = event.get("device")
+                mac = (
+                    self._fob_id_to_mac.get(device_id)
+                    if isinstance(device_id, str)
+                    else None
+                )
                 async_dispatcher_send(
                     self.hass,
                     SIGNAL_FOB_BUTTON.format(self.config_entry.entry_id),
@@ -256,10 +272,15 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # object, so stamp the time here and let the entity hold it.
             alarm_type = (meta.get("alarmType") or {}).get("text")
             if etype == "alarmHubGlassBreak" or alarm_type == "glassBreak":
-                sensor_id = (meta.get("deviceId") or {}).get("text") or event.get(
-                    "device"
+                device_ref = meta.get("deviceId")
+                sensor_id = (
+                    device_ref.get("text") if isinstance(device_ref, dict) else None
+                ) or event.get("device")
+                mac = (
+                    self._sensor_id_to_mac.get(sensor_id)
+                    if isinstance(sensor_id, str)
+                    else None
                 )
-                mac = self._sensor_id_to_mac.get(sensor_id or "")
                 if mac:
                     self.glass_break_at[mac] = _event_time(event)
                     glass_changed = True
