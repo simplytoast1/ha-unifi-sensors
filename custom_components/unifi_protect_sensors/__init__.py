@@ -5,7 +5,7 @@ from __future__ import annotations
 import aiohttp
 
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.aiohttp_client import (
     async_create_clientsession,
     async_get_clientsession,
@@ -30,8 +30,18 @@ from .coordinator import (
     UnifiProtectConfigEntry,
     UnifiProtectCoordinator,
 )
-from .entity import detect_model
+from .entity import detect_model, is_air_quality
 from .internal_api import UnifiProtectInternalClient
+
+# Capabilities pre-0.5.0 versions wrongly created on the UP Air Quality sensor
+# (it looks like a leak sensor over the API key), mapped to their entity domain.
+# Removed from the registry on setup so upgrades do not keep a phantom leak or
+# battery entity lingering as "unavailable".
+_STALE_UAQ_ENTITIES = {
+    "leak": "binary_sensor",
+    "battery_low": "binary_sensor",
+    "battery": "sensor",
+}
 
 
 async def async_setup_entry(
@@ -54,6 +64,8 @@ async def async_setup_entry(
     )
     if legacy_hub is not None:
         device_registry.async_remove_device(legacy_hub.id)
+
+    _cleanup_suppressed_uaq_entities(hass, coordinator)
 
     entry.runtime_data = coordinator
 
@@ -99,6 +111,23 @@ async def async_setup_entry(
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
+
+
+@callback
+def _cleanup_suppressed_uaq_entities(
+    hass: HomeAssistant, coordinator: UnifiProtectCoordinator
+) -> None:
+    """Remove leak/battery entities left on UAQ devices by pre-0.5.0 versions."""
+    entity_registry = er.async_get(hass)
+    for mac, sensor in coordinator.sensors.items():
+        if not is_air_quality(sensor):
+            continue
+        for suffix, domain in _STALE_UAQ_ENTITIES.items():
+            entity_id = entity_registry.async_get_entity_id(
+                domain, DOMAIN, f"{mac}_{suffix}"
+            )
+            if entity_id is not None:
+                entity_registry.async_remove(entity_id)
 
 
 async def _async_setup_air_quality(
