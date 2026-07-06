@@ -29,7 +29,8 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import UnifiProtectApiClient, UnifiProtectApiError, UnifiProtectAuthError
-from .const import DOMAIN, SIGNAL_FOB_BUTTON
+from .const import AIR_QUALITY_SCAN_INTERVAL, DOMAIN, SIGNAL_FOB_BUTTON
+from .internal_api import UnifiProtectInternalClient, UnifiProtectLocalError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -76,6 +77,9 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # mac -> epoch ms of the last glass-break event. Glass break arrives on
         # the events websocket only; the sensor object has no field for it.
         self.glass_break_at: dict[str, float] = {}
+        # Optional beta air-quality coordinator (local-account internal API).
+        # Set by async_setup_entry when the local account is configured.
+        self.air_quality: UnifiProtectAirQualityCoordinator | None = None
 
         self._sensor_id_to_mac: dict[str, str] = {}
         self._fob_id_to_mac: dict[str, str] = {}
@@ -365,3 +369,54 @@ def _extract_events(parsed: Any) -> list[dict[str, Any]]:
 
     walk(parsed)
     return events
+
+
+class UnifiProtectAirQualityCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
+    """Beta: polls the internal Protect API for UP Air Quality readings.
+
+    Enabled only when the user configures a local account. Kept fully separate
+    from the API-key coordinator so a login failure or an internal-API change
+    shows the air-quality sensors as unavailable and never disturbs the sensor,
+    fob, relay or leak entities. Its data is ``mac -> {metric: {value, status}}``.
+    """
+
+    config_entry: UnifiProtectConfigEntry
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: UnifiProtectConfigEntry,
+        client: UnifiProtectInternalClient,
+        main: UnifiProtectCoordinator,
+    ) -> None:
+        """Initialise the air-quality coordinator."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            config_entry=entry,
+            name=f"{DOMAIN}_air_quality",
+            update_interval=timedelta(seconds=AIR_QUALITY_SCAN_INTERVAL),
+        )
+        self.client = client
+        self._main = main
+
+    async def _async_update_data(self) -> dict[str, dict[str, Any]]:
+        """Fetch the airQuality block for each UAQ the key API found."""
+        # Local import avoids an import cycle (entity imports coordinator).
+        from .entity import is_air_quality
+
+        result: dict[str, dict[str, Any]] = {}
+        for mac, sensor in self._main.sensors.items():
+            if not is_air_quality(sensor):
+                continue
+            sensor_id = sensor.get("id")
+            if not sensor_id:
+                continue
+            try:
+                data = await self.client.async_get_sensor(sensor_id)
+            except UnifiProtectLocalError as err:
+                raise UpdateFailed(str(err)) from err
+            air_quality = data.get("airQuality")
+            if isinstance(air_quality, dict) and air_quality:
+                result[mac] = air_quality
+        return result

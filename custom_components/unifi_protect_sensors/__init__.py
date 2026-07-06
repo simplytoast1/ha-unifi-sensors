@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import aiohttp
+
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.aiohttp_client import (
+    async_create_clientsession,
+    async_get_clientsession,
+)
 
 from .api import UnifiProtectApiClient
 from .const import (
     CONF_API_KEY,
     CONF_HOST,
+    CONF_LOCAL_ENABLED,
+    CONF_LOCAL_PASSWORD,
+    CONF_LOCAL_USERNAME,
     CONF_SCAN_INTERVAL,
     CONF_VERIFY_SSL,
     DEFAULT_SCAN_INTERVAL,
@@ -17,8 +25,13 @@ from .const import (
     DOMAIN,
     PLATFORMS,
 )
-from .coordinator import UnifiProtectConfigEntry, UnifiProtectCoordinator
+from .coordinator import (
+    UnifiProtectAirQualityCoordinator,
+    UnifiProtectConfigEntry,
+    UnifiProtectCoordinator,
+)
 from .entity import detect_model
+from .internal_api import UnifiProtectInternalClient
 
 
 async def async_setup_entry(
@@ -43,6 +56,11 @@ async def async_setup_entry(
         device_registry.async_remove_device(legacy_hub.id)
 
     entry.runtime_data = coordinator
+
+    # Optional beta: a local account unlocks the UP Air Quality readings that the
+    # API key cannot see. Isolated so a failure here never affects the key path.
+    await _async_setup_air_quality(hass, entry, coordinator, verify_ssl)
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await coordinator.async_start()
 
@@ -83,11 +101,44 @@ async def async_setup_entry(
     return True
 
 
+async def _async_setup_air_quality(
+    hass: HomeAssistant,
+    entry: UnifiProtectConfigEntry,
+    coordinator: UnifiProtectCoordinator,
+    verify_ssl: bool,
+) -> None:
+    """Stand up the beta air-quality coordinator when a local account is set."""
+    if not entry.options.get(CONF_LOCAL_ENABLED):
+        return
+    username = entry.options.get(CONF_LOCAL_USERNAME)
+    password = entry.options.get(CONF_LOCAL_PASSWORD)
+    if not username or not password:
+        return
+
+    # A dedicated session with an unsafe cookie jar so the session cookie is
+    # kept for IP-address hosts and never mixes with the shared key session.
+    session = async_create_clientsession(
+        hass, verify_ssl=verify_ssl, cookie_jar=aiohttp.CookieJar(unsafe=True)
+    )
+    client = UnifiProtectInternalClient(
+        session, entry.data[CONF_HOST], username, password
+    )
+    aq_coordinator = UnifiProtectAirQualityCoordinator(
+        hass, entry, client, coordinator
+    )
+    coordinator.air_quality = aq_coordinator
+    # async_refresh (not first_refresh): a beta failure must not abort setup.
+    await aq_coordinator.async_refresh()
+
+
 async def async_unload_entry(
     hass: HomeAssistant, entry: UnifiProtectConfigEntry
 ) -> bool:
     """Tear down a config entry."""
-    await entry.runtime_data.async_stop()
+    coordinator = entry.runtime_data
+    await coordinator.async_stop()
+    if coordinator.air_quality is not None:
+        await coordinator.air_quality.client.async_close()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 

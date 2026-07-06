@@ -23,6 +23,9 @@ def detect_model(sensor: dict[str, Any]) -> str:
     def enabled(key: str) -> bool:
         return bool((sensor.get(key) or {}).get("isEnabled"))
 
+    if is_air_quality(sensor):
+        return "Air Quality Sensor"
+
     mount = sensor.get("mountType")
     leak_settings = sensor.get("leakSettings") or {}
     has_glass = enabled("glassBreakSettings")
@@ -61,6 +64,26 @@ def battery_status(device: dict[str, Any]) -> dict[str, Any]:
     """Return the battery block, preferring the modern wireless path."""
     wireless = device.get("wirelessConnectionState") or {}
     return wireless.get("batteryStatus") or device.get("batteryStatus") or {}
+
+
+def is_air_quality(sensor: dict[str, Any]) -> bool:
+    """True for the UniFi Air Quality (UAQ) monitor.
+
+    The Integration API exposes no model field and reports the UAQ as a generic
+    ``modelKey: "sensor"`` that happens to carry ``leakSettings.isInternalEnabled``
+    set, so on capability fields alone it is indistinguishable from a leak
+    sensor and would be mislabelled as one. The reliable difference is power:
+    the UAQ is mains powered, so it reports no battery percentage and is not
+    paired to a sensor bridge, whereas every battery UP Sense reports both.
+    The air-quality readings themselves (AQI, CO2, VOC, PM, ...) are not exposed
+    anywhere in the Integration API, so this device contributes no measurement
+    entities; identifying it here just keeps it from masquerading as a leak
+    sensor and from sprouting phantom battery entities.
+    """
+    wireless = sensor.get("wirelessConnectionState") or {}
+    if wireless.get("bridge"):
+        return False
+    return battery_status(sensor).get("percentage") is None
 
 
 def _format_mac(mac: str) -> str:

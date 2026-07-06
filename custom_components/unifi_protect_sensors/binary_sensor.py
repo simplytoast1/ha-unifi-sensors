@@ -19,7 +19,7 @@ from homeassistant.helpers.event import async_call_later
 
 from .const import ALARM_HOLD, GLASS_HOLD, LEAK_HOLD, MOTION_HOLD
 from .coordinator import UnifiProtectConfigEntry, UnifiProtectCoordinator
-from .entity import UnifiProtectSensorEntity, battery_status
+from .entity import UnifiProtectSensorEntity, battery_status, is_air_quality
 
 
 def _now_ms() -> float:
@@ -75,6 +75,9 @@ def _leak_hold(device: dict[str, Any]) -> float | None:
 
 
 def _leak_exists(device: dict[str, Any]) -> bool:
+    # The UAQ carries leakSettings.isInternalEnabled but is not a leak sensor.
+    if is_air_quality(device):
+        return False
     leak = device.get("leakSettings") or {}
     return (
         device.get("mountType") == "leak"
@@ -155,6 +158,7 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[UnifiBinarySensorDescription, ...] = (
         device_class=BinarySensorDeviceClass.BATTERY,
         entity_category=EntityCategory.DIAGNOSTIC,
         is_on_fn=lambda d: bool(battery_status(d).get("isLow")),
+        exists_fn=lambda d: not is_air_quality(d),
     ),
 )
 

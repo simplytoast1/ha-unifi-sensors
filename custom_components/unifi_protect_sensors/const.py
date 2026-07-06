@@ -14,6 +14,15 @@ CONF_API_KEY = "api_key"
 CONF_VERIFY_SSL = "verify_ssl"
 CONF_SCAN_INTERVAL = "scan_interval"
 
+# Optional "beta" local-account mode. The Integration API (the X-API-KEY surface
+# this integration is built on) does not expose the UP Air Quality monitor's
+# readings; those live only in the internal Protect API, which needs a UniFi-OS
+# local account (session cookie). When enabled, a separate, isolated coordinator
+# polls that API for air-quality sensors. Undocumented and firmware-fragile.
+CONF_LOCAL_ENABLED = "local_enabled"
+CONF_LOCAL_USERNAME = "local_username"
+CONF_LOCAL_PASSWORD = "local_password"
+
 DEFAULT_VERIFY_SSL = False
 # REST poll cadence. This integration is push first (it subscribes to the
 # console websockets), so polling is only a fallback for when the websocket is
@@ -21,6 +30,10 @@ DEFAULT_VERIFY_SSL = False
 DEFAULT_SCAN_INTERVAL = 60
 MIN_SCAN_INTERVAL = 5
 MAX_SCAN_INTERVAL = 3600
+
+# Poll cadence for the internal air-quality API. The device samples every ~15s;
+# 30s keeps Home Assistant close without hammering the rate-limited internal API.
+AIR_QUALITY_SCAN_INTERVAL = 30
 
 PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,

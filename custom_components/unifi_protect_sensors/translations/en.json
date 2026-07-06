@@ -37,12 +37,23 @@
       "init": {
         "title": "Options",
         "data": {
-          "scan_interval": "Polling fallback interval (seconds)"
+          "scan_interval": "Polling fallback interval (seconds)",
+          "local_enabled": "Local account for unsupported accessories (optional, beta)",
+          "local_username": "Local account username",
+          "local_password": "Local account password"
         },
         "data_description": {
-          "scan_interval": "How often to poll the console when the websocket push stream is unavailable. The integration always prefers the websocket."
+          "scan_interval": "How often to poll the console when the websocket push stream is unavailable. The integration always prefers the websocket.",
+          "local_enabled": "Optional and not required for normal use. Enable only to read accessories the Integration API key cannot access, currently the UP Air Quality sensor (CO2, VOC, PM, and so on), via the console's internal API. Requires a local UniFi OS account without 2FA. This API is undocumented and may break on Protect firmware updates.",
+          "local_username": "Username of a local UniFi OS account (a read-only Viewer role is enough).",
+          "local_password": "Password for the local account. Stored in Home Assistant and only sent to your console."
         }
       }
+    },
+    "error": {
+      "invalid_local_auth": "The local account credentials were rejected. Check the username and password, and that the account has no 2FA.",
+      "cannot_connect": "Could not reach the console's local API.",
+      "local_credentials_required": "Enter a username and password, or turn off the air-quality (beta) option."
     }
   }
 }
