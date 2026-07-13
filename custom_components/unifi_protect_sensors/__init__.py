@@ -147,7 +147,10 @@ async def _async_setup_air_quality(
     # A dedicated session with an unsafe cookie jar so the session cookie is
     # kept for IP-address hosts and never mixes with the shared key session.
     session = async_create_clientsession(
-        hass, verify_ssl=verify_ssl, cookie_jar=aiohttp.CookieJar(unsafe=True)
+        hass,
+        verify_ssl=verify_ssl,
+        auto_cleanup=False,
+        cookie_jar=aiohttp.CookieJar(unsafe=True),
     )
     client = UnifiProtectInternalClient(
         session, entry.data[CONF_HOST], username, password
