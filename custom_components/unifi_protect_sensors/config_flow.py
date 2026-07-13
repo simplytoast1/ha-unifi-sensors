@@ -70,13 +70,16 @@ async def _async_validate_local(
 ) -> None:
     """Raise if the local account cannot log into the internal API."""
     session = async_create_clientsession(
-        hass, verify_ssl=verify_ssl, cookie_jar=aiohttp.CookieJar(unsafe=True)
+        hass,
+        verify_ssl=verify_ssl,
+        auto_cleanup=False,
+        cookie_jar=aiohttp.CookieJar(unsafe=True),
     )
     try:
         client = UnifiProtectInternalClient(session, host, username, password)
         await client.async_login()
     finally:
-        await session.close()
+        session.detach()
 
 
 class UnifiProtectConfigFlow(ConfigFlow, domain=DOMAIN):
