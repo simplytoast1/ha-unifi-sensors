@@ -11,14 +11,30 @@ from .const import DOMAIN, MANUFACTURER
 from .coordinator import UnifiProtectCoordinator
 
 
+def has_feature(device: dict[str, Any], flag: str) -> bool | None:
+    """Check Protect 7.3+ sensorFeatureFlags for a capability slice.
+
+    Returns True when the flag has a positive channelCount, False when
+    featureFlags is present and the flag is absent, or None on older firmware
+    that does not populate featureFlags yet.
+    """
+    flags = device.get("featureFlags")
+    if not isinstance(flags, dict) or not flags:
+        return None
+    cap = flags.get(flag)
+    return isinstance(cap, dict) and (cap.get("channelCount") or 0) > 0
+
+
 def detect_model(sensor: dict[str, Any]) -> str:
     """Infer a descriptive device type from the live capability set.
 
-    The Integration API only reports ``modelKey: "sensor"`` with no model or
-    marketing name field, so the type is inferred from which capabilities the
-    sensor has enabled. This reflects the deployed function, not a verified
-    hardware model (the API does not expose one).
+    Prefers the hardware ``type`` string when the API populates it, and falls
+    back to inferring the deployed function from ``featureFlags`` and enabled
+    capability blocks.
     """
+    hw_type = sensor.get("type")
+    if isinstance(hw_type, str) and hw_type.strip():
+        return hw_type.strip()
 
     def enabled(key: str) -> bool:
         return bool((sensor.get(key) or {}).get("isEnabled"))
@@ -29,30 +45,41 @@ def detect_model(sensor: dict[str, Any]) -> str:
     mount = sensor.get("mountType")
     leak_settings = sensor.get("leakSettings") or {}
     has_glass = enabled("glassBreakSettings")
-    has_alarm = enabled("alarmSettings")
-    has_motion = enabled("motionSettings")
+    has_alarm = has_feature(sensor, "smoke") is True or enabled("alarmSettings")
+    has_motion = has_feature(sensor, "motion") is True or enabled("motionSettings")
     has_environment = (
-        enabled("temperatureSettings")
+        has_feature(sensor, "temperature") is True
+        or has_feature(sensor, "humidity") is True
+        or has_feature(sensor, "light") is True
+        or enabled("temperatureSettings")
         or enabled("humiditySettings")
         or enabled("lightSettings")
     )
     has_leak = (
-        mount == "leak"
+        has_feature(sensor, "waterLeak") is True
+        or mount == "leak"
         or bool(leak_settings.get("isInternalEnabled"))
         or bool(leak_settings.get("isExternalEnabled"))
     )
-    has_contact = mount in ("door", "window", "garage")
+    has_contact = (
+        has_feature(sensor, "open") is True
+        or mount in ("door", "window", "garage")
+    )
 
     if has_glass:
         return "Glass Break Sensor"
-    if has_contact:
+    if has_contact and not (has_motion or has_environment or has_leak or has_alarm):
         return "Contact Sensor"
-    if has_leak:
+    if has_leak and not (has_motion or has_environment or has_contact or has_alarm):
         return "Leak Sensor"
     if has_alarm and not (has_motion or has_environment):
         return "Smoke/CO Alarm"
     if has_motion and has_environment:
         return "UP Sense"
+    if has_contact:
+        return "Contact Sensor"
+    if has_leak:
+        return "Leak Sensor"
     if has_motion:
         return "Motion Sensor"
     if has_environment:
@@ -66,24 +93,70 @@ def battery_status(device: dict[str, Any]) -> dict[str, Any]:
     return wireless.get("batteryStatus") or device.get("batteryStatus") or {}
 
 
+def has_battery(device: dict[str, Any]) -> bool:
+    """True for battery-powered devices (all sensors/fobs except the mains UAQ)."""
+    return not is_air_quality(device)
+
+
 def is_air_quality(sensor: dict[str, Any]) -> bool:
     """True for the UniFi Air Quality (UAQ) monitor.
 
-    The Integration API exposes no model field and reports the UAQ as a generic
-    ``modelKey: "sensor"`` that happens to carry ``leakSettings.isInternalEnabled``
-    set, so on capability fields alone it is indistinguishable from a leak
-    sensor and would be mislabelled as one. The reliable difference is power:
-    the UAQ is mains powered, so it reports no battery percentage and is not
-    paired to a sensor bridge, whereas every battery UP Sense reports both.
-    The air-quality readings themselves (AQI, CO2, VOC, PM, ...) are not exposed
-    anywhere in the Integration API, so this device contributes no measurement
-    entities; identifying it here just keeps it from masquerading as a leak
-    sensor and from sprouting phantom battery entities.
+    Over the Integration API the UAQ is reported as ``modelKey: "sensor"`` with
+    ``mountType: "none"``, no battery percentage, no bridge, and only
+    ``leakSettings.isInternalEnabled`` set (on Protect 7.3+ ``featureFlags``
+    carries ``waterLeak`` and ``tamper``). Dedicated entry/contact sensors (like
+    the USL Entry Recessed) or offline battery sensors can also report a null
+    battery percentage and no bridge, so we strictly require ``mountType`` to be
+    ``"none"`` (or unset), no contact/motion/glass/alarm/stats capabilities, and
+    ``leakSettings.isInternalEnabled`` to be true.
     """
+    hw_type = (sensor.get("type") or "").upper()
+    if hw_type:
+        return "UAQ" in hw_type or "AIR" in hw_type
+
     wireless = sensor.get("wirelessConnectionState") or {}
     if wireless.get("bridge"):
         return False
-    return battery_status(sensor).get("percentage") is None
+    if battery_status(sensor).get("percentage") is not None:
+        return False
+
+    # Any contact mount (door, window, garage) or explicit leak mount is never
+    # an Air Quality monitor.
+    mount = sensor.get("mountType")
+    if mount not in (None, "none"):
+        return False
+    if sensor.get("isOpened") is not None or sensor.get("openStatusChangedAt") is not None:
+        return False
+
+    # Protect 7.3+ populates featureFlags with supported capability channels.
+    # A sensor advertising open, motion, light, or smoke is not a UAQ.
+    flags = sensor.get("featureFlags")
+    if isinstance(flags, dict) and flags:
+        if any(
+            flags.get(k)
+            for k in ("open", "motion", "light", "smoke", "temperature", "humidity")
+        ):
+            return False
+
+    # None of the non-UAQ sensor settings may be enabled.
+    for setting in (
+        "motionSettings",
+        "temperatureSettings",
+        "humiditySettings",
+        "lightSettings",
+        "alarmSettings",
+        "glassBreakSettings",
+    ):
+        if (sensor.get(setting) or {}).get("isEnabled"):
+            return False
+
+    # The UAQ always reports leakSettings.isInternalEnabled=True (and never
+    # external leak) over the Integration API.
+    leak = sensor.get("leakSettings") or {}
+    if not leak.get("isInternalEnabled") or leak.get("isExternalEnabled"):
+        return False
+
+    return True
 
 
 def _format_mac(mac: str) -> str:
@@ -147,7 +220,8 @@ class UnifiProtectFobEntity(_UnifiProtectBaseEntity):
     def device_info(self) -> DeviceInfo:
         device = self._device or {}
         name = device.get("name") or f"UniFi Fob {self._mac}"
-        return self._build_device_info(model="UniFi Fob", name=name)
+        model = (device.get("type") or "").strip() or "UniFi Fob"
+        return self._build_device_info(model=model, name=name)
 
 
 class UnifiProtectRelayEntity(_UnifiProtectBaseEntity):
@@ -161,4 +235,5 @@ class UnifiProtectRelayEntity(_UnifiProtectBaseEntity):
     def device_info(self) -> DeviceInfo:
         device = self._device or {}
         name = device.get("name") or f"UniFi Relay {self._mac}"
-        return self._build_device_info(model="UniFi Relay", name=name)
+        model = (device.get("type") or "").strip() or "UniFi Relay"
+        return self._build_device_info(model=model, name=name)

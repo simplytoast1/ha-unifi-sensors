@@ -21,6 +21,7 @@ from homeassistant.const import (
     UnitOfTemperature,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -31,7 +32,13 @@ from .coordinator import (
     UnifiProtectConfigEntry,
     UnifiProtectCoordinator,
 )
-from .entity import UnifiProtectSensorEntity, battery_status, is_air_quality
+from .entity import (
+    UnifiProtectFobEntity,
+    UnifiProtectSensorEntity,
+    battery_status,
+    has_feature,
+    is_air_quality,
+)
 
 
 def _metric(device: dict[str, Any], key: str) -> float | None:
@@ -52,8 +59,15 @@ class UnifiSensorDescription(SensorEntityDescription):
     exists_fn: Callable[[dict[str, Any]], bool] = lambda _device: True
 
 
-def _capability(setting: str) -> Callable[[dict[str, Any]], bool]:
-    return lambda device: bool((device.get(setting) or {}).get("isEnabled"))
+def _capability(setting: str, flag: str) -> Callable[[dict[str, Any]], bool]:
+    def check(device: dict[str, Any]) -> bool:
+        if is_air_quality(device):
+            return False
+        if has_feature(device, flag) is False:
+            return False
+        return bool((device.get(setting) or {}).get("isEnabled"))
+
+    return check
 
 
 SENSOR_DESCRIPTIONS: tuple[UnifiSensorDescription, ...] = (
@@ -63,7 +77,7 @@ SENSOR_DESCRIPTIONS: tuple[UnifiSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: _metric(d, "temperature"),
-        exists_fn=_capability("temperatureSettings"),
+        exists_fn=_capability("temperatureSettings", "temperature"),
     ),
     UnifiSensorDescription(
         key="humidity",
@@ -71,7 +85,7 @@ SENSOR_DESCRIPTIONS: tuple[UnifiSensorDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: _metric(d, "humidity"),
-        exists_fn=_capability("humiditySettings"),
+        exists_fn=_capability("humiditySettings", "humidity"),
     ),
     UnifiSensorDescription(
         key="illuminance",
@@ -79,7 +93,7 @@ SENSOR_DESCRIPTIONS: tuple[UnifiSensorDescription, ...] = (
         native_unit_of_measurement=LIGHT_LUX,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda d: _metric(d, "light"),
-        exists_fn=_capability("lightSettings"),
+        exists_fn=_capability("lightSettings", "light"),
     ),
     UnifiSensorDescription(
         key="battery",
@@ -159,12 +173,28 @@ AIR_QUALITY_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
     ),
     SensorEntityDescription(
+        key="nox",
+        name="NOx index",
+        icon="mdi:molecule",
+        state_class=SensorStateClass.MEASUREMENT,
+    ),
+    SensorEntityDescription(
         key="vape",
         name="Vape",
         icon="mdi:smoking",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
     ),
+)
+
+FOB_BATTERY_DESCRIPTION = UnifiSensorDescription(
+    key="battery",
+    device_class=SensorDeviceClass.BATTERY,
+    native_unit_of_measurement=PERCENTAGE,
+    state_class=SensorStateClass.MEASUREMENT,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    value_fn=_battery_level,
+    exists_fn=lambda d: _battery_level(d) is not None,
 )
 
 
@@ -175,20 +205,35 @@ async def async_setup_entry(
 ) -> None:
     """Set up sensor entities and keep up with newly discovered devices."""
     coordinator = entry.runtime_data
+    ent_reg = er.async_get(hass)
     known: set[str] = set()
 
     @callback
     def _discover() -> None:
-        new: list[UnifiProtectSensor] = []
+        new: list[SensorEntity] = []
         for mac, device in coordinator.sensors.items():
             for description in SENSOR_DESCRIPTIONS:
-                if not description.exists_fn(device):
-                    continue
                 unique_id = f"{mac}_{description.key}"
+                if not description.exists_fn(device):
+                    if unique_id not in known:
+                        ent_id = ent_reg.async_get_entity_id(
+                            "sensor", DOMAIN, unique_id
+                        )
+                        if ent_id is not None:
+                            ent_reg.async_remove(ent_id)
+                    continue
                 if unique_id in known:
                     continue
                 known.add(unique_id)
                 new.append(UnifiProtectSensor(coordinator, mac, description))
+        for mac, fob in coordinator.fobs.items():
+            unique_id = f"{mac}_{FOB_BATTERY_DESCRIPTION.key}"
+            if not FOB_BATTERY_DESCRIPTION.exists_fn(fob):
+                continue
+            if unique_id in known:
+                continue
+            known.add(unique_id)
+            new.append(UnifiProtectFobSensor(coordinator, mac, FOB_BATTERY_DESCRIPTION))
         if new:
             async_add_entities(new)
 
@@ -204,6 +249,9 @@ async def async_setup_entry(
         def _discover_air_quality() -> None:
             new_aq: list[UnifiProtectAirQualitySensor] = []
             for mac, metrics in (aq_coordinator.data or {}).items():
+                sensor_dev = coordinator.sensors.get(mac)
+                if sensor_dev is not None and not is_air_quality(sensor_dev):
+                    continue
                 for description in AIR_QUALITY_DESCRIPTIONS:
                     if description.key not in metrics:
                         continue
@@ -248,6 +296,31 @@ class UnifiProtectSensor(UnifiProtectSensorEntity, SensorEntity):
             and device is not None
             and self.entity_description.exists_fn(device)
         )
+
+    @property
+    def native_value(self) -> float | int | None:
+        """Return the current reading."""
+        device = self._device
+        if device is None:
+            return None
+        return self.entity_description.value_fn(device)
+
+
+class UnifiProtectFobSensor(UnifiProtectFobEntity, SensorEntity):
+    """A numeric reading (battery percentage) from a UniFi Protect fob."""
+
+    entity_description: UnifiSensorDescription
+
+    def __init__(
+        self,
+        coordinator: UnifiProtectCoordinator,
+        mac: str,
+        description: UnifiSensorDescription,
+    ) -> None:
+        """Initialise the fob sensor entity."""
+        super().__init__(coordinator, mac)
+        self.entity_description = description
+        self._attr_unique_id = f"{mac}_{description.key}"
 
     @property
     def native_value(self) -> float | int | None:

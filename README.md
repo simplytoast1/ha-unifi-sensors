@@ -16,7 +16,9 @@ For every UniFi Protect sensor it discovers, the integration creates one Home As
 | Motion | `binary_sensor` | `motion` |
 | Contact (door, window, garage mount) | `binary_sensor` | `door` / `window` / `garage_door` |
 | Leak | `binary_sensor` | `moisture` |
-| Alarm sound (UP Smoke) | `binary_sensor` | `sound` |
+| Alarm sound (UP Smoke / CO) | `binary_sensor` | `sound` |
+| Glass break | `binary_sensor` | — |
+| Tamper | `binary_sensor` | `tamper` |
 | Temperature | `sensor` | `temperature` |
 | Humidity | `sensor` | `humidity` |
 | Ambient light | `sensor` | `illuminance` |
@@ -24,21 +26,22 @@ For every UniFi Protect sensor it discovers, the integration creates one Home As
 | Low battery | `binary_sensor` | `battery` |
 | Connectivity | `binary_sensor` | `connectivity` |
 
-Each paired **key fob** becomes a device with one [`event`](https://www.home-assistant.io/integrations/event/) entity per advertised button (arm, disarm, night, panic, left, right, and so on). Use the event entity as a trigger in your automations: when it fires a `press`, run whatever you like.
+Each paired **key fob** becomes a device with one [`event`](https://www.home-assistant.io/integrations/event/) entity per advertised button (arm, disarm, night, panic, left, right, main, and so on), plus battery and connectivity diagnostic entities. Use the event entity as a trigger in your automations: when it fires a `press`, run whatever you like.
 
 The UP Sense is a true combination device, so a single physical sensor can report motion, temperature, humidity, light, leak, alarm, and contact all at once. Each one maps to a single Home Assistant device carrying as many entities as it has enabled capabilities. Toggling a capability in the Protect UI adds or removes the matching entity on the next refresh.
 
 ## Supported devices
 
-The integration reads the UniFi Protect Integration API and maps each device by the capabilities it reports live, not by a fixed model list. The API does not return a model name for sensors, so the model shown on the Home Assistant device is inferred from those capabilities (for example Leak Sensor, Motion Sensor, Glass Break Sensor, Contact Sensor, or Environmental Sensor). This is the deployed function, not a verified hardware model.
+The integration reads the UniFi Protect Integration API and maps each device by the capabilities it reports live, not by a fixed model list. Where the API provides a hardware `type` name it is used directly; otherwise the model shown on the Home Assistant device is inferred from its capabilities (for example Leak Sensor, Motion Sensor, Glass Break Sensor, Contact Sensor, Air Quality Sensor, or Environmental Sensor).
 
 | UniFi device | Support | Entities produced |
 | --- | --- | --- |
-| Protect All-In-One Sensor (UP-Sense) | Full, hardware verified | Motion, contact, leak, alarm sound (smoke/CO audible), temperature, humidity, ambient light, battery, connectivity |
-| Leak, Environmental, Entry and Motion sensors | Full, by capability | Whichever the device reports: leak, temperature, humidity, light, motion, contact |
-| Glass Break Sensor (USL-GlassBreak) | Full | Glass-break binary sensor (from the events stream) plus its motion |
-| Relay / I-O device (USL-Relay) | Full | One switch entity per output, with on and off control |
-| Remote Control KeyFob (USL-FOB) | Full | One event entity per button (arm, disarm, night, panic, and so on). Only appears when a fob is paired |
+| Protect All-In-One Sensor (UP-Sense) | Full, hardware verified | Motion, contact, leak, alarm sound (smoke/CO audible), tamper, temperature, humidity, ambient light, battery, connectivity |
+| Leak, Environmental, Entry and Motion sensors | Full, by capability | Whichever the device reports: leak, temperature, humidity, light, motion, contact, tamper |
+| Glass Break Sensor (USL-GlassBreak) | Full | Glass-break binary sensor (from the events stream), motion, tamper, battery, connectivity |
+| Relay / I-O device (USL-Relay) | Full | One switch entity per output, one binary sensor per dry-contact input, and connectivity |
+| Remote Control KeyFob (USL-FOB) | Full | One event entity per button (arm, disarm, night, panic, and so on), plus battery and connectivity |
+| Air Quality Sensor (UP-Air-Quality) | Full (local account beta) | Connectivity, tamper, plus AQI, CO2, VOC, TVOC, NOx, PM1, PM2.5, PM4.0, PM10, vape, temperature, and humidity when local account mode is enabled |
 
 The mapping is capability based: whatever a sensor reports (motion, contact, leak, temperature, humidity, ambient light, alarm sound) becomes the matching Home Assistant entity, regardless of which physical model it is. Relay outputs are exposed as switches you can toggle.
 

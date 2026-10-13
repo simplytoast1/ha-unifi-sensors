@@ -50,6 +50,7 @@ MOTION_HOLD = 5
 ALARM_HOLD = 5
 LEAK_HOLD = 60
 GLASS_HOLD = 5
+TAMPER_HOLD = 60
 
 # Every button a fob may advertise (the OpenAPI enum).
 FOB_BUTTONS = [
@@ -63,6 +64,7 @@ FOB_BUTTONS = [
     "right",
     "input1",
     "input2",
+    "main",
 ]
 # Fallback button set used when the API reports featureFlags.buttons empty or
 # missing (observed on the USL Fob, Protect 7.1.60).
@@ -80,6 +82,7 @@ FOB_BUTTON_LABELS = {
     "right": "Right",
     "input1": "Input 1",
     "input2": "Input 2",
+    "main": "Main",
 }
 
 # Dispatcher signal carrying fob button presses. Formatted with the config

@@ -32,6 +32,7 @@ from .coordinator import (
 )
 from .entity import detect_model, is_air_quality
 from .internal_api import UnifiProtectInternalClient
+from .sensor import AIR_QUALITY_DESCRIPTIONS
 
 # Capabilities pre-0.5.0 versions wrongly created on the UP Air Quality sensor
 # (it looks like a leak sensor over the API key), mapped to their entity domain.
@@ -65,13 +66,13 @@ async def async_setup_entry(
     if legacy_hub is not None:
         device_registry.async_remove_device(legacy_hub.id)
 
-    _cleanup_suppressed_uaq_entities(hass, coordinator)
-
     entry.runtime_data = coordinator
 
     # Optional beta: a local account unlocks the UP Air Quality readings that the
     # API key cannot see. Isolated so a failure here never affects the key path.
     await _async_setup_air_quality(hass, entry, coordinator, verify_ssl)
+
+    _cleanup_stale_entities(hass, coordinator)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await coordinator.async_start()
@@ -102,9 +103,11 @@ async def async_setup_entry(
         for mac, sensor in coordinator.sensors.items():
             sync(mac, sensor.get("name") or f"UniFi Sensor {mac}", detect_model(sensor))
         for mac, fob in coordinator.fobs.items():
-            sync(mac, fob.get("name") or f"UniFi Fob {mac}", "UniFi Fob")
+            fob_model = (fob.get("type") or "").strip() or "UniFi Fob"
+            sync(mac, fob.get("name") or f"UniFi Fob {mac}", fob_model)
         for mac, relay in coordinator.relays.items():
-            sync(mac, relay.get("name") or f"UniFi Relay {mac}", "UniFi Relay")
+            relay_model = (relay.get("type") or "").strip() or "UniFi Relay"
+            sync(mac, relay.get("name") or f"UniFi Relay {mac}", relay_model)
 
     _reconcile_devices()
     entry.async_on_unload(coordinator.async_add_listener(_reconcile_devices))
@@ -114,20 +117,46 @@ async def async_setup_entry(
 
 
 @callback
-def _cleanup_suppressed_uaq_entities(
+def _cleanup_stale_entities(
     hass: HomeAssistant, coordinator: UnifiProtectCoordinator
 ) -> None:
-    """Remove leak/battery entities left on UAQ devices by pre-0.5.0 versions."""
+    """Remove stale or misassigned entities from the Home Assistant registry.
+
+    * On true Air Quality (UAQ) devices, removes leak/battery entities left by
+      pre-0.5.0 versions.
+    * On non-UAQ devices (such as USL Entry Recessed door sensors that 0.5.0
+      could misclassify as Air Quality when batteryStatus was null) or when the
+      local-account option is turned off, removes any ``_aq_`` entities so they
+      do not remain stuck on the device.
+    """
     entity_registry = er.async_get(hass)
+    aq_enabled = coordinator.air_quality is not None
+
     for mac, sensor in coordinator.sensors.items():
-        if not is_air_quality(sensor):
-            continue
-        for suffix, domain in _STALE_UAQ_ENTITIES.items():
-            entity_id = entity_registry.async_get_entity_id(
-                domain, DOMAIN, f"{mac}_{suffix}"
-            )
-            if entity_id is not None:
-                entity_registry.async_remove(entity_id)
+        if is_air_quality(sensor):
+            for suffix, domain in _STALE_UAQ_ENTITIES.items():
+                entity_id = entity_registry.async_get_entity_id(
+                    domain, DOMAIN, f"{mac}_{suffix}"
+                )
+                if entity_id is not None:
+                    entity_registry.async_remove(entity_id)
+            if not aq_enabled:
+                _remove_aq_entities_for_mac(entity_registry, mac)
+        else:
+            _remove_aq_entities_for_mac(entity_registry, mac)
+
+
+@callback
+def _remove_aq_entities_for_mac(
+    entity_registry: er.EntityRegistry, mac: str
+) -> None:
+    """Remove all air-quality entities registered for ``mac``."""
+    for desc in AIR_QUALITY_DESCRIPTIONS:
+        entity_id = entity_registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{mac}_aq_{desc.key}"
+        )
+        if entity_id is not None:
+            entity_registry.async_remove(entity_id)
 
 
 async def _async_setup_air_quality(
@@ -169,6 +198,15 @@ async def async_unload_entry(
     if coordinator.air_quality is not None:
         await coordinator.air_quality.client.async_close()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant,
+    config_entry: UnifiProtectConfigEntry,
+    device_entry: dr.DeviceEntry,
+) -> bool:
+    """Allow deleting a device from the Home Assistant UI."""
+    return True
 
 
 async def _async_update_listener(

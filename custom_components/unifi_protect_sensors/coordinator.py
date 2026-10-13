@@ -202,12 +202,22 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @callback
     def _handle_devices(self, raw: str) -> None:
-        """Merge device state diffs and notify entities."""
+        """Merge device state diffs, apply removals, and notify entities."""
         parsed = _safe_json(raw)
         if parsed is None:
             return
-        sensors, fobs, relays = _extract_devices(parsed)
+        sensors, fobs, relays, removed_ids = _extract_devices(parsed)
         changed = False
+        for removed_id in removed_ids:
+            changed |= self._remove_device(
+                removed_id, self.sensors, self._sensor_id_to_mac
+            )
+            changed |= self._remove_device(
+                removed_id, self.fobs, self._fob_id_to_mac
+            )
+            changed |= self._remove_device(
+                removed_id, self.relays, self._relay_id_to_mac
+            )
         for partial in sensors:
             changed |= self._merge_device(partial, self.sensors, self._sensor_id_to_mac)
         for partial in fobs:
@@ -218,6 +228,19 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.async_set_updated_data(
                 {"sensors": self.sensors, "fobs": self.fobs, "relays": self.relays}
             )
+
+    def _remove_device(
+        self,
+        device_id: str,
+        store: dict[str, dict[str, Any]],
+        index: dict[str, str],
+    ) -> bool:
+        mac = index.pop(device_id, None)
+        if not mac or mac not in store:
+            return False
+        store.pop(mac, None)
+        self.glass_break_at.pop(mac, None)
+        return True
 
     def _merge_device(
         self,
@@ -241,11 +264,11 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @callback
     def _handle_events(self, raw: str) -> None:
-        """Route fob button presses and glass-break events to entities."""
+        """Route fob button presses, glass-break, and relay input events."""
         parsed = _safe_json(raw)
         if parsed is None:
             return
-        glass_changed = False
+        state_changed = False
         for event in _extract_events(parsed):
             etype = event.get("type")
             meta = event.get("metadata") or {}
@@ -270,6 +293,29 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 continue
 
+            # Relay input state change (circuitClosed -> "on", circuitOpen -> "off").
+            if etype == "relayInputChanged":
+                device_id = event.get("device")
+                mac = (
+                    self._relay_id_to_mac.get(device_id)
+                    if isinstance(device_id, str)
+                    else None
+                )
+                channel_str = (meta.get("inputChannel") or {}).get("text")
+                input_state = (meta.get("inputState") or {}).get("text")
+                if mac and mac in self.relays and channel_str is not None and input_state:
+                    try:
+                        ch_id = int(channel_str)
+                    except ValueError:
+                        ch_id = None
+                    if ch_id is not None:
+                        new_state = "on" if input_state == "circuitClosed" else "off"
+                        for inp in self.relays[mac].get("inputs") or []:
+                            if inp.get("id") == ch_id:
+                                inp["state"] = new_state
+                                state_changed = True
+                continue
+
             # Glass break. Arrives as a sensor-level sensorAlarm (device is the
             # sensor) or an alarm-hub event (the sensor id is in
             # metadata.deviceId). There is no glass-break field on the sensor
@@ -287,10 +333,10 @@ class UnifiProtectCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
                 if mac:
                     self.glass_break_at[mac] = _event_time(event)
-                    glass_changed = True
+                    state_changed = True
                     _LOGGER.debug("Glass break detected on sensor %s", mac)
 
-        if glass_changed:
+        if state_changed:
             self.async_set_updated_data(
                 {"sensors": self.sensors, "fobs": self.fobs, "relays": self.relays}
             )
@@ -308,8 +354,13 @@ def _safe_json(raw: str) -> Any:
 
 def _extract_devices(
     parsed: Any,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Walk an arbitrary payload and split out sensor, fob and relay objects.
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[str],
+]:
+    """Walk an arbitrary payload and split out sensor, fob, relay objects and removals.
 
     The ``modelKey`` field is the discriminator. Other device types (camera,
     chime, light, ...) are ignored: this integration does not expose them.
@@ -317,30 +368,39 @@ def _extract_devices(
     sensors: list[dict[str, Any]] = []
     fobs: list[dict[str, Any]] = []
     relays: list[dict[str, Any]] = []
+    removed_ids: list[str] = []
 
-    def walk(node: Any) -> None:
+    def walk(node: Any, removing: bool = False) -> None:
         if isinstance(node, list):
             for item in node:
-                walk(item)
+                walk(item, removing=removing)
             return
         if not isinstance(node, dict):
             return
-        if isinstance(node.get("id"), str):
-            if node.get("modelKey") == "sensor":
-                sensors.append(node)
+        is_remove = removing or node.get("type") == "remove"
+        model_key = node.get("modelKey")
+        if model_key in ("sensor", "fob", "relay"):
+            raw_id = node.get("id")
+            if is_remove:
+                if isinstance(raw_id, str):
+                    removed_ids.append(raw_id)
+                elif isinstance(raw_id, list):
+                    removed_ids.extend(i for i in raw_id if isinstance(i, str))
                 return
-            if node.get("modelKey") == "fob":
-                fobs.append(node)
-                return
-            if node.get("modelKey") == "relay":
-                relays.append(node)
+            if isinstance(raw_id, str):
+                if model_key == "sensor":
+                    sensors.append(node)
+                elif model_key == "fob":
+                    fobs.append(node)
+                elif model_key == "relay":
+                    relays.append(node)
                 return
         for key in ("item", "items", "data", "sensors", "fobs", "relays"):
             if key in node:
-                walk(node[key])
+                walk(node[key], removing=is_remove)
 
     walk(parsed)
-    return sensors, fobs, relays
+    return sensors, fobs, relays, removed_ids
 
 
 def _event_time(event: dict[str, Any]) -> float:

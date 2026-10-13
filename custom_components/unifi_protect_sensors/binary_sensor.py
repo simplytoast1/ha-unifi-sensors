@@ -14,12 +14,20 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_call_later
 
-from .const import ALARM_HOLD, GLASS_HOLD, LEAK_HOLD, MOTION_HOLD
+from .const import ALARM_HOLD, DOMAIN, GLASS_HOLD, LEAK_HOLD, MOTION_HOLD, TAMPER_HOLD
 from .coordinator import UnifiProtectConfigEntry, UnifiProtectCoordinator
-from .entity import UnifiProtectSensorEntity, battery_status, is_air_quality
+from .entity import (
+    UnifiProtectFobEntity,
+    UnifiProtectRelayEntity,
+    UnifiProtectSensorEntity,
+    battery_status,
+    has_feature,
+    is_air_quality,
+)
 
 
 def _now_ms() -> float:
@@ -78,12 +86,37 @@ def _leak_exists(device: dict[str, Any]) -> bool:
     # The UAQ carries leakSettings.isInternalEnabled but is not a leak sensor.
     if is_air_quality(device):
         return False
+    if has_feature(device, "waterLeak") is False:
+        return False
     leak = device.get("leakSettings") or {}
     return (
         device.get("mountType") == "leak"
         or bool(leak.get("isInternalEnabled"))
         or bool(leak.get("isExternalEnabled"))
     )
+
+
+# --- tamper ---------------------------------------------------------------
+
+
+def _tamper_on(device: dict[str, Any]) -> bool:
+    at = device.get("tamperingDetectedAt")
+    if not isinstance(at, (int, float)) or not at:
+        return False
+    return (_now_ms() - at) < TAMPER_HOLD * 1000
+
+
+def _tamper_hold(device: dict[str, Any]) -> float | None:
+    at = device.get("tamperingDetectedAt")
+    if not isinstance(at, (int, float)) or not at:
+        return None
+    return at / 1000 + TAMPER_HOLD
+
+
+def _tamper_exists(device: dict[str, Any]) -> bool:
+    if has_feature(device, "tamper") is False:
+        return False
+    return has_feature(device, "tamper") is True or "tamperingDetectedAt" in device
 
 
 # --- contact --------------------------------------------------------------
@@ -96,11 +129,29 @@ _CONTACT_CLASSES = {
 
 
 def _contact_class(device: dict[str, Any]) -> BinarySensorDeviceClass | None:
-    return _CONTACT_CLASSES.get(device.get("mountType", ""))
+    return _CONTACT_CLASSES.get(device.get("mountType", ""), BinarySensorDeviceClass.DOOR)
 
 
-def _capability(setting: str) -> Callable[[dict[str, Any]], bool]:
-    return lambda device: bool((device.get(setting) or {}).get("isEnabled"))
+def _contact_exists(device: dict[str, Any]) -> bool:
+    if is_air_quality(device):
+        return False
+    if has_feature(device, "open") is False:
+        return False
+    return (
+        device.get("mountType") in ("door", "window", "garage")
+        or has_feature(device, "open") is True
+    )
+
+
+def _capability(setting: str, flag: str) -> Callable[[dict[str, Any]], bool]:
+    def check(device: dict[str, Any]) -> bool:
+        if is_air_quality(device):
+            return False
+        if has_feature(device, flag) is False:
+            return False
+        return bool((device.get(setting) or {}).get("isEnabled"))
+
+    return check
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -121,13 +172,13 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[UnifiBinarySensorDescription, ...] = (
         key="motion",
         device_class=BinarySensorDeviceClass.MOTION,
         is_on_fn=_motion_on,
-        exists_fn=_capability("motionSettings"),
+        exists_fn=_capability("motionSettings", "motion"),
         hold_until_fn=_motion_hold,
     ),
     UnifiBinarySensorDescription(
         key="contact",
         is_on_fn=lambda d: d.get("isOpened") is True,
-        exists_fn=lambda d: d.get("mountType") in ("door", "window", "garage"),
+        exists_fn=_contact_exists,
         device_class_fn=_contact_class,
     ),
     UnifiBinarySensorDescription(
@@ -143,8 +194,16 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[UnifiBinarySensorDescription, ...] = (
         name="Alarm",
         device_class=BinarySensorDeviceClass.SOUND,
         is_on_fn=_alarm_on,
-        exists_fn=_capability("alarmSettings"),
+        exists_fn=_capability("alarmSettings", "smoke"),
         hold_until_fn=_alarm_hold,
+    ),
+    UnifiBinarySensorDescription(
+        key="tamper",
+        device_class=BinarySensorDeviceClass.TAMPER,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        is_on_fn=_tamper_on,
+        exists_fn=_tamper_exists,
+        hold_until_fn=_tamper_hold,
     ),
     UnifiBinarySensorDescription(
         key="connectivity",
@@ -162,6 +221,30 @@ BINARY_SENSOR_DESCRIPTIONS: tuple[UnifiBinarySensorDescription, ...] = (
     ),
 )
 
+FOB_BINARY_SENSOR_DESCRIPTIONS: tuple[UnifiBinarySensorDescription, ...] = (
+    UnifiBinarySensorDescription(
+        key="connectivity",
+        device_class=BinarySensorDeviceClass.CONNECTIVITY,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        is_on_fn=lambda d: d.get("state") == "CONNECTED",
+    ),
+    UnifiBinarySensorDescription(
+        key="battery_low",
+        name="Battery low",
+        device_class=BinarySensorDeviceClass.BATTERY,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        is_on_fn=lambda d: bool(battery_status(d).get("isLow")),
+        exists_fn=lambda d: battery_status(d).get("isLow") is not None,
+    ),
+)
+
+RELAY_CONNECTIVITY_DESCRIPTION = UnifiBinarySensorDescription(
+    key="connectivity",
+    device_class=BinarySensorDeviceClass.CONNECTIVITY,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    is_on_fn=lambda d: d.get("state") == "CONNECTED",
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -170,6 +253,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up binary sensors and keep up with newly discovered devices."""
     coordinator = entry.runtime_data
+    ent_reg = er.async_get(hass)
     known: set[str] = set()
 
     @callback
@@ -177,18 +261,60 @@ async def async_setup_entry(
         new: list[BinarySensorEntity] = []
         for mac, device in coordinator.sensors.items():
             for description in BINARY_SENSOR_DESCRIPTIONS:
+                unique_id = f"{mac}_{description.key}"
                 if not description.exists_fn(device):
+                    if unique_id not in known:
+                        ent_id = ent_reg.async_get_entity_id(
+                            "binary_sensor", DOMAIN, unique_id
+                        )
+                        if ent_id is not None:
+                            ent_reg.async_remove(ent_id)
+                    continue
+                if unique_id in known:
+                    continue
+                known.add(unique_id)
+                new.append(UnifiProtectBinarySensor(coordinator, mac, description))
+            glass_id = f"{mac}_glass_break"
+            if (device.get("glassBreakSettings") or {}).get("isEnabled") and not is_air_quality(device):
+                if glass_id not in known:
+                    known.add(glass_id)
+                    new.append(UnifiProtectGlassBreakSensor(coordinator, mac))
+            elif glass_id not in known:
+                ent_id = ent_reg.async_get_entity_id("binary_sensor", DOMAIN, glass_id)
+                if ent_id is not None:
+                    ent_reg.async_remove(ent_id)
+
+        for mac, fob in coordinator.fobs.items():
+            for description in FOB_BINARY_SENSOR_DESCRIPTIONS:
+                if not description.exists_fn(fob):
                     continue
                 unique_id = f"{mac}_{description.key}"
                 if unique_id in known:
                     continue
                 known.add(unique_id)
-                new.append(UnifiProtectBinarySensor(coordinator, mac, description))
-            if (device.get("glassBreakSettings") or {}).get("isEnabled"):
-                unique_id = f"{mac}_glass_break"
-                if unique_id not in known:
-                    known.add(unique_id)
-                    new.append(UnifiProtectGlassBreakSensor(coordinator, mac))
+                new.append(UnifiProtectFobBinarySensor(coordinator, mac, description))
+
+        for mac, relay in coordinator.relays.items():
+            conn_id = f"{mac}_{RELAY_CONNECTIVITY_DESCRIPTION.key}"
+            if conn_id not in known:
+                known.add(conn_id)
+                new.append(
+                    UnifiProtectRelayBinarySensor(
+                        coordinator, mac, RELAY_CONNECTIVITY_DESCRIPTION
+                    )
+                )
+            for inp in relay.get("inputs") or []:
+                input_id = inp.get("id")
+                if input_id is None:
+                    continue
+                unique_id = f"{mac}_input_{input_id}"
+                if unique_id in known:
+                    continue
+                known.add(unique_id)
+                new.append(
+                    UnifiProtectRelayInputSensor(coordinator, mac, input_id, inp)
+                )
+
         if new:
             async_add_entities(new)
 
@@ -345,3 +471,95 @@ class UnifiProtectGlassBreakSensor(UnifiProtectSensorEntity, BinarySensorEntity)
             self._unsub_clear()
             self._unsub_clear = None
         await super().async_will_remove_from_hass()
+
+
+class UnifiProtectFobBinarySensor(UnifiProtectFobEntity, BinarySensorEntity):
+    """A boolean diagnostic state (connectivity, battery low) on a fob."""
+
+    entity_description: UnifiBinarySensorDescription
+
+    def __init__(
+        self,
+        coordinator: UnifiProtectCoordinator,
+        mac: str,
+        description: UnifiBinarySensorDescription,
+    ) -> None:
+        """Initialise the fob binary sensor."""
+        super().__init__(coordinator, mac)
+        self.entity_description = description
+        self._attr_unique_id = f"{mac}_{description.key}"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return the current boolean state."""
+        device = self._device
+        if device is None:
+            return None
+        return self.entity_description.is_on_fn(device)
+
+
+class UnifiProtectRelayBinarySensor(UnifiProtectRelayEntity, BinarySensorEntity):
+    """A boolean diagnostic state (connectivity) on a relay."""
+
+    entity_description: UnifiBinarySensorDescription
+
+    def __init__(
+        self,
+        coordinator: UnifiProtectCoordinator,
+        mac: str,
+        description: UnifiBinarySensorDescription,
+    ) -> None:
+        """Initialise the relay binary sensor."""
+        super().__init__(coordinator, mac)
+        self.entity_description = description
+        self._attr_unique_id = f"{mac}_{description.key}"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return the current boolean state."""
+        device = self._device
+        if device is None:
+            return None
+        return self.entity_description.is_on_fn(device)
+
+
+class UnifiProtectRelayInputSensor(UnifiProtectRelayEntity, BinarySensorEntity):
+    """One dry-contact input channel on a UniFi relay."""
+
+    def __init__(
+        self,
+        coordinator: UnifiProtectCoordinator,
+        mac: str,
+        input_id: int,
+        inp: dict[str, Any],
+    ) -> None:
+        """Initialise the binary sensor for one relay input."""
+        super().__init__(coordinator, mac)
+        self._input_id = input_id
+        self._attr_unique_id = f"{mac}_input_{input_id}"
+        self._attr_name = inp.get("name") or f"Input {input_id + 1}"
+
+    def _input(self) -> dict[str, Any] | None:
+        for inp in (self._device or {}).get("inputs") or []:
+            if inp.get("id") == self._input_id:
+                return inp
+        return None
+
+    @property
+    def available(self) -> bool:
+        """Available while the relay is connected and the input exists."""
+        device = self._device
+        return (
+            self.coordinator.last_update_success
+            and device is not None
+            and device.get("state") == "CONNECTED"
+            and self._input() is not None
+        )
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return whether the input circuit is active."""
+        inp = self._input()
+        if inp is None or inp.get("state") is None:
+            return None
+        return inp.get("state") == "on"
