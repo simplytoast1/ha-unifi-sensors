@@ -89,8 +89,8 @@ class UnifiProtectInternalClient:
         return data if isinstance(data, dict) else {}
 
     async def async_close(self) -> None:
-        """Close the underlying session."""
-        await self._session.close()
+        """Detach the private session without closing HA's shared connector."""
+        self._session.detach()
 
     async def _get(self, path: str, _retried: bool = False) -> Any:
         if not self._logged_in:
